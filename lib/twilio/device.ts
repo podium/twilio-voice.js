@@ -960,8 +960,8 @@ class Device extends EventEmitter {
           return;
         }
 
-        this._activeCall.disconnect();
-        this._removeCall(this._activeCall);
+        // this._activeCall.disconnect();
+        // this._removeCall(this._activeCall);
       },
       codecPreferences: this._options.codecPreferences,
       dialtonePlayer: Device._dialtonePlayer,
