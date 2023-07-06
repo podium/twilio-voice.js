@@ -1,6 +1,6 @@
 const sinon = require('sinon');
 const assert = require('assert');
-const PeerConnection = require('./../lib/twilio/rtc/peerconnection');
+const PeerConnection = require('./../lib/twilio/rtc/peerconnection').default;
 
 const root = global;
 
@@ -824,7 +824,7 @@ describe('PeerConnection', () => {
         eCallSid,
         eConstraints,
         eIceServers,
-        callback
+        callback,
       );
     });
 

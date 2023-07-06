@@ -1,8 +1,15 @@
-const EventTarget = require('./eventtarget');
+/**
+ * @packageDocumentation
+ * @module Voice
+ * @internalapi
+ */
+// @ts-nocheck
+
+import EventTarget from './eventtarget';
 
 const POLL_INTERVAL_MS = 500;
 
-const nativeMediaDevices = typeof navigator !== 'undefined' && navigator.mediaDevices;
+let nativeMediaDevices = null;
 
 /**
  * Make a custom MediaDevices object, and proxy through existing functionality. If
@@ -23,24 +30,18 @@ class MediaDevicesShim extends EventTarget {
 
     const knownDevices = [];
     Object.defineProperties(this, {
-      _deviceChangeIsNative: {
-        value: reemitNativeEvent(this, 'devicechange')
-      },
-      _deviceInfoChangeIsNative: {
-        value: reemitNativeEvent(this, 'deviceinfochange')
-      },
-      _knownDevices: {
-        value: knownDevices
-      },
+      _deviceChangeIsNative: { value: reemitNativeEvent(this, 'devicechange') },
+      _deviceInfoChangeIsNative: { value: reemitNativeEvent(this, 'deviceinfochange') },
+      _knownDevices: { value: knownDevices },
       _pollInterval: {
         value: null,
-        writable: true
-      }
+        writable: true,
+      },
     });
 
     if (typeof nativeMediaDevices.enumerateDevices === 'function') {
       nativeMediaDevices.enumerateDevices().then(devices => {
-        devices.sort(sortDevicesById).forEach([].push, knownDevices);
+        devices.sort(sortDevicesById).forEach(d => knownDevices.push(d));
       });
     }
 
@@ -49,6 +50,7 @@ class MediaDevicesShim extends EventTarget {
         return;
       }
 
+      // TODO: Remove polling in the next major release.
       this._pollInterval = this._pollInterval
         || setInterval(sampleDevices.bind(null, this), POLL_INTERVAL_MS);
     }.bind(this));
@@ -62,22 +64,38 @@ class MediaDevicesShim extends EventTarget {
   }
 }
 
-if (nativeMediaDevices && typeof nativeMediaDevices.enumerateDevices === 'function') {
-  MediaDevicesShim.prototype.enumerateDevices = function enumerateDevices() {
+MediaDevicesShim.prototype.enumerateDevices = function enumerateDevices() {
+  if (nativeMediaDevices && typeof nativeMediaDevices.enumerateDevices === 'function') {
     return nativeMediaDevices.enumerateDevices(...arguments);
-  };
-}
+  }
+  return null;
+};
 
 MediaDevicesShim.prototype.getUserMedia = function getUserMedia() {
   return nativeMediaDevices.getUserMedia(...arguments);
 };
 
 function deviceInfosHaveChanged(newDevices, oldDevices) {
-  const oldLabels = oldDevices.reduce((map, device) => map.set(device.deviceId, device.label || null), new Map());
+  newDevices = newDevices.filter(d => d.kind === 'audioinput' || d.kind === 'audiooutput');
+  oldDevices = oldDevices.filter(d => d.kind === 'audioinput' || d.kind === 'audiooutput');
 
-  return newDevices.some(newDevice => {
-    const oldLabel = oldLabels.get(newDevice.deviceId);
-    return typeof oldLabel !== 'undefined' && oldLabel !== newDevice.label;
+  // On certain browsers, we cannot use deviceId as a key for comparison.
+  // It's missing along with the device label if the customer has not granted permission.
+  // The following checks whether some old devices have empty labels and if they are now available.
+  // This means, the user has granted permissions and the device info have changed.
+  if (oldDevices.some(d => !d.deviceId) &&
+    newDevices.some(d => !!d.deviceId)) {
+    return true;
+  }
+
+  // Use both deviceId and "kind" to create a unique key
+  // since deviceId is not unique across different kinds of devices.
+  const oldLabels = oldDevices.reduce((map, device) =>
+    map.set(`${device.deviceId}-${device.kind}`, device.label), new Map());
+
+  return newDevices.some(device => {
+    const oldLabel = oldLabels.get(`${device.deviceId}-${device.kind}`);
+    return typeof oldLabel !== 'undefined' && oldLabel !== device.label;
   });
 }
 
@@ -164,6 +182,9 @@ function sortDevicesById(a, b) {
   return a.deviceId < b.deviceId;
 }
 
-module.exports = (function shimMediaDevices() {
+const getMediaDevicesInstance = () => {
+  nativeMediaDevices = typeof navigator !== 'undefined' ? navigator.mediaDevices : null;
   return nativeMediaDevices ? new MediaDevicesShim() : null;
-})();
+};
+
+export default getMediaDevicesInstance;

@@ -8,6 +8,7 @@ import { EventEmitter } from 'events';
 import { levels as LogLevels, LogLevelDesc } from 'loglevel';
 import AudioHelper from './audiohelper';
 import Call from './call';
+import * as C from './constants';
 import DialtonePlayer from './dialtonePlayer';
 import {
   AuthorizationErrors,
@@ -20,8 +21,10 @@ import {
   NotSupportedError,
   TwilioError,
 } from './errors';
+import Publisher from './eventpublisher';
 import Log from './log';
 import { PreflightTest } from './preflight/preflight';
+import PStream from './pstream';
 import {
   createEventGatewayURI,
   createSignalingEndpointURL,
@@ -31,18 +34,15 @@ import {
   Region,
   regionToEdge,
 } from './regions';
+import * as rtc from './rtc';
+import getUserMedia from './rtc/getusermedia';
+import Sound from './sound';
 import {
   isLegacyEdge,
   isUnifiedPlanDefault,
   queryToJson,
 } from './util';
-
-const C = require('./constants');
-const Publisher = require('./eventpublisher');
-const PStream = require('./pstream');
-const rtc = require('./rtc');
-const getUserMedia = require('./rtc/getusermedia');
-const Sound = require('./sound');
+import { generateVoiceEventSid } from './uuid';
 
 // Placeholders until we convert the respective files to TypeScript.
 /**
@@ -142,6 +142,11 @@ export interface IExtendedDeviceOptions extends Device.Options {
    * Custom Sound constructor
    */
   Sound?: ISound;
+
+  /**
+   * Voice event SID generator.
+   */
+  voiceEventSidGenerator?: () => string;
 }
 
 /**
@@ -340,21 +345,13 @@ class Device extends EventEmitter {
     preflight: false,
     sounds: { },
     tokenRefreshMs: 10000,
+    voiceEventSidGenerator: generateVoiceEventSid,
   };
 
   /**
    * The name of the edge the {@link Device} is connected to.
    */
   private _edge: string | null = null;
-
-  /**
-   * Whether each sound is enabled.
-   */
-  private _enabledSounds: Record<Device.ToggleableSound, boolean> = {
-    [Device.SoundName.Disconnect]: true,
-    [Device.SoundName.Incoming]: true,
-    [Device.SoundName.Outgoing]: true,
-  };
 
   /**
    * The name of the home region the {@link Device} is connected to.
@@ -559,6 +556,7 @@ class Device extends EventEmitter {
 
     const activeCall = this._activeCall = await this._makeCall(options.params || { }, {
       rtcConfiguration: options.rtcConfiguration,
+      voiceEventSidGenerator: this._options.voiceEventSidGenerator,
     });
 
     // Make sure any incoming calls are ignored
@@ -736,11 +734,7 @@ class Device extends EventEmitter {
       : Array.isArray(this._options.chunderw) && this._options.chunderw;
 
     const newChunderURIs = this._chunderURIs = (
-      chunderw || getChunderURIs(
-        this._options.edge,
-        undefined,
-        this._log.warn.bind(this._log),
-      )
+      chunderw || getChunderURIs(this._options.edge)
     ).map(createSignalingEndpointURL);
 
     let hasChunderURIsChanged =
@@ -808,6 +802,8 @@ class Device extends EventEmitter {
 
   /**
    * Update the token used by this {@link Device} to connect to Twilio.
+   * It is recommended to call this API after [[Device.tokenWillExpireEvent]] is emitted,
+   * and before or after a call to prevent a potential ~1s audio loss during the update process.
    * @param token
    */
   updateToken(token: string) {
@@ -943,7 +939,7 @@ class Device extends EventEmitter {
 
     const config: Call.Config = {
       audioHelper: this._audio,
-      getUserMedia,
+      getUserMedia: this._options.getUserMedia || getUserMedia,
       isUnifiedPlanDefault: Device._isUnifiedPlanDefault,
       onIgnore: (): void => {
         this._soundcache.get(Device.SoundName.Incoming).stop();
@@ -955,6 +951,7 @@ class Device extends EventEmitter {
 
     options = Object.assign({
       MediaStream: this._options.MediaStream || rtc.PeerConnection,
+      RTCPeerConnection: this._options.RTCPeerConnection,
       beforeAccept: (currentCall: Call) => {
         if (!this._activeCall || this._activeCall === currentCall) {
           return;
@@ -964,25 +961,38 @@ class Device extends EventEmitter {
         // this._removeCall(this._activeCall);
       },
       codecPreferences: this._options.codecPreferences,
+      customSounds: this._options.sounds,
       dialtonePlayer: Device._dialtonePlayer,
       dscp: this._options.dscp,
+      // TODO(csantos): Remove forceAggressiveIceNomination option in 3.x
       forceAggressiveIceNomination: this._options.forceAggressiveIceNomination,
       getInputStream: (): MediaStream | null => this._options.fileInputStream || this._callInputStream,
       getSinkIds: (): string[] => this._callSinkIds,
       maxAverageBitrate: this._options.maxAverageBitrate,
       preflight: this._options.preflight,
       rtcConstraints: this._options.rtcConstraints,
-      shouldPlayDisconnect: () => this._enabledSounds.disconnect,
+      shouldPlayDisconnect: () => this._audio?.disconnect(),
       twimlParams,
+      voiceEventSidGenerator: this._options.voiceEventSidGenerator,
     }, options);
 
     const maybeUnsetPreferredUri = () => {
+      if (!this._stream) {
+        this._log.warn('UnsetPreferredUri called without a stream');
+        return;
+      }
       if (this._activeCall === null && this._calls.length === 0) {
         this._stream.updatePreferredURI(null);
       }
     };
 
     const call = new (this._options.Call || Call)(config, options);
+
+    this._publisher.info('settings', 'init', {
+      RTCPeerConnection: !!this._options.RTCPeerConnection,
+      enumerateDevices: !!this._options.enumerateDevices,
+      getUserMedia: !!this._options.getUserMedia,
+    }, call);
 
     call.once('accept', () => {
       this._stream.updatePreferredURI(this._preferredURI);
@@ -992,7 +1002,7 @@ class Device extends EventEmitter {
         this._audio._maybeStartPollingVolume();
       }
 
-      if (call.direction === Call.CallDirection.Outgoing && this._enabledSounds.outgoing) {
+      if (call.direction === Call.CallDirection.Outgoing && this._audio?.outgoing()) {
         this._soundcache.get(Device.SoundName.Outgoing).play();
       }
 
@@ -1033,6 +1043,12 @@ class Device extends EventEmitter {
       }
       this._removeCall(call);
       maybeUnsetPreferredUri();
+      /**
+       * NOTE(kamalbennani): We need to stop the incoming sound when the call is
+       * disconnected right after the user has accepted the call (activeCall.accept()), and before
+       * the call has been fully connected (i.e. before the `pstream.answer` event)
+       */
+      this._maybeStopIncomingSound();
     });
 
     call.once('reject', () => {
@@ -1087,7 +1103,9 @@ class Device extends EventEmitter {
     const region = getRegionShortcode(payload.region);
     this._edge = payload.edge || regionToEdge[region as Region] || payload.region;
     this._region = region || payload.region;
+    this._home = payload.home;
     this._publisher?.setHost(createEventGatewayURI(payload.home));
+
     if (payload.token) {
       this._identity = payload.token.identity;
       if (
@@ -1105,13 +1123,8 @@ class Device extends EventEmitter {
         }, timeoutMs);
       }
     }
-    this._home = payload.home;
 
-    const preferredURIs = getChunderURIs(
-      this._edge as Edge,
-      undefined,
-      this._log.warn.bind(this._log),
-    );
+    const preferredURIs = getChunderURIs(this._edge as Edge);
     if (preferredURIs.length > 0) {
       const [preferredURI] = preferredURIs;
       this._preferredURI = createSignalingEndpointURL(preferredURI);
@@ -1189,6 +1202,7 @@ class Device extends EventEmitter {
       callParameters,
       offerSdp: payload.sdp,
       reconnectToken: payload.reconnect,
+      voiceEventSidGenerator: this._options.voiceEventSidGenerator,
     });
 
     this._calls.push(call);
@@ -1198,7 +1212,7 @@ class Device extends EventEmitter {
       this._publishNetworkChange();
     });
 
-    const play = (this._enabledSounds.incoming && !wasBusy)
+    const play = (this._audio?.incoming() && !wasBusy)
       ? () => this._soundcache.get(Device.SoundName.Incoming).play()
       : () => Promise.resolve();
 
@@ -1296,19 +1310,22 @@ class Device extends EventEmitter {
    * Set up an audio helper for usage by this {@link Device}.
    */
   private _setupAudioHelper(): void {
+    const audioOptions: AudioHelper.Options = {
+      audioContext: Device.audioContext,
+      enumerateDevices: this._options.enumerateDevices,
+    };
+
     if (this._audio) {
       this._log.info('Found existing audio helper; destroying...');
+      audioOptions.enabledSounds = this._audio._getEnabledSounds();
       this._destroyAudioHelper();
     }
 
     this._audio = new (this._options.AudioHelper || AudioHelper)(
       this._updateSinkIds,
       this._updateInputStream,
-      getUserMedia,
-      {
-        audioContext: Device.audioContext,
-        enabledSounds: this._enabledSounds,
-      },
+      this._options.getUserMedia || getUserMedia,
+      audioOptions,
     );
 
     this._audio.on('deviceChange', (lostActiveDevices: MediaDeviceInfo[]) => {
@@ -1345,6 +1362,10 @@ class Device extends EventEmitter {
 
     if (this._options.eventgw) {
       publisherOptions.host = this._options.eventgw;
+    }
+
+    if (this._home) {
+      publisherOptions.host = createEventGatewayURI(this._home);
     }
 
     this._publisher = new (this._options.Publisher || Publisher)(PUBLISHER_PRODUCT_NAME, this.token, publisherOptions);
@@ -1618,9 +1639,9 @@ namespace Device {
    * Options to be passed to {@link Device.connect}.
    */
   export interface ConnectOptions extends Call.AcceptOptions {
-   /**
-    * A flat object containing key:value pairs to be sent to the TwiML app.
-    */
+    /**
+     * A flat object containing key:value pairs to be sent to the TwiML app.
+     */
     params?: Record<string, string>;
   }
 
@@ -1681,10 +1702,20 @@ namespace Device {
     edge?: string[] | string;
 
     /**
+     * Overrides the native MediaDevices.enumerateDevices API.
+     */
+    enumerateDevices?: any;
+
+    /**
      * Experimental feature.
      * Whether to use ICE Aggressive nomination.
      */
     forceAggressiveIceNomination?: boolean;
+
+    /**
+     * Overrides the native MediaDevices.getUserMedia API.
+     */
+    getUserMedia?: any;
 
     /**
      * Log level.
@@ -1716,6 +1747,46 @@ namespace Device {
      * is explicitly specified within the Device options.
      */
     maxCallSignalingTimeoutMs?: number;
+
+    /**
+     * Overrides the native RTCPeerConnection class.
+     *
+     * By default, the SDK will use the `unified-plan` SDP format if the browser supports it.
+     * Unexpected behavior may happen if the `RTCPeerConnection` parameter uses an SDP format
+     * that is different than what the SDK uses.
+     *
+     * For example, if the browser supports `unified-plan` and the `RTCPeerConnection`
+     * parameter uses `plan-b` by default, the SDK will use `unified-plan`
+     * which will cause conflicts with the usage of the `RTCPeerConnection`.
+     *
+     * In order to avoid this issue, you need to explicitly set the SDP format that you want
+     * the SDK to use with the `RTCPeerConnection` via [[Device.ConnectOptions.rtcConfiguration]] for outgoing calls.
+     * Or [[Call.AcceptOptions.rtcConfiguration]] for incoming calls.
+     *
+     * See the example below. Assuming the `RTCPeerConnection` you provided uses `plan-b` by default, the following
+     * code sets the SDP format to `unified-plan` instead.
+     *
+     * ```ts
+     * // Outgoing calls
+     * const call = await device.connect({
+     *   rtcConfiguration: {
+     *     sdpSemantics: 'unified-plan'
+     *   }
+     *   // Other options
+     * });
+     *
+     * // Incoming calls
+     * device.on('incoming', call => {
+     *   call.accept({
+     *     rtcConfiguration: {
+     *       sdpSemantics: 'unified-plan'
+     *     }
+     *     // Other options
+     *   });
+     * });
+     * ```
+     */
+    RTCPeerConnection?: any;
 
     /**
      * A mapping of custom sound URLs by sound name.

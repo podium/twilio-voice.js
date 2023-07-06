@@ -1,3 +1,160 @@
+2.6.1 (In Progress)
+===================
+
+Changes
+-------
+
+- Fixed some security vulnerabilities shown by `npm audit`.
+- Removed unused dependencies.
+- Replaced deprecated dependencies.
+
+Bug Fixes
+---------
+
+- Fixed an issue where custom DTMF sounds would not play. With this release, custom DTMF sounds should now play when configured during device initialization.
+
+  ```ts
+  const device = new Device(token, {
+    sounds: {
+      dtmf8: 'http://mysite.com/8_button.mp3',
+      // Other custom sounds
+    },
+    // Other options
+  });
+  ```
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/178) where calling `device.updateOptions` would reset the `device.audio._enabledSounds` state.
+
+2.6.0 (June 20, 2023)
+=====================
+
+Changes
+-------
+
+- The SDK now builds on NodeJS versions 16 and above without the `--legacy-peer-deps` flag.
+- Removed usage of NodeJS modules from the SDK and some dependencies. With this change, the SDK should now work with some of the latest frameworks that use the latest versions of bundlers such as Vite and Webpack.
+- The AudioPlayer dependency has been incorporated into the SDK as part of a migration. This change fixes an issue where source maps are not properly loaded.
+- Removed unnecessary files from the generated npm package.
+- Links to source maps are now included in the generated npm package.
+- The `ws` package has been moved to `devDependencies`.
+- The SDK no longer depends on the `xmlhttprequest` npm package.
+
+2.5.0 (May 9, 2023)
+===================
+
+New Features
+------------
+
+### WebRTC API Overrides (Beta)
+
+The SDK now allows you to override WebRTC APIs using the following options and events. If your environment supports WebRTC redirection, such as [Citrix HDX](https://www.citrix.com/solutions/vdi-and-daas/hdx/what-is-hdx.html)'s WebRTC [redirection technologies](https://www.citrix.com/blogs/2019/01/15/hdx-a-webrtc-manifesto/), your application can use this new *beta* feature for improved audio quality in those environments.
+
+- [Device.Options.enumerateDevices](https://twilio.github.io/twilio-voice.js/interfaces/voice.device.options.html#enumeratedevices)
+- [Device.Options.getUserMedia](https://twilio.github.io/twilio-voice.js/interfaces/voice.device.options.html#getusermedia)
+- [Device.Options.RTCPeerConnection](https://twilio.github.io/twilio-voice.js/interfaces/voice.device.options.html#rtcpeerconnection)
+- [call.on('audio', handler(remoteAudio))](https://twilio.github.io/twilio-voice.js/classes/voice.call.html#audioevent)
+
+2.4.0 (April 6, 2023)
+===================
+
+Changes
+-------
+
+- Updated the description of [Device.updateToken](https://twilio.github.io/twilio-voice.js/classes/voice.device.html#updatetoken) API. It is recommended to call this API after [Device.tokenWillExpireEvent](https://twilio.github.io/twilio-voice.js/classes/voice.device.html#tokenwillexpireevent) is emitted, and before or after a call to prevent a potential ~1s audio loss during the update process.
+
+- Updated stats reporting to stop using deprecated `RTCIceCandidateStats` - `ip` and `deleted`.
+
+Bug Fixes
+---------
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/100) where a `TypeError` is thrown after rejecting a call then invoking `updateToken`.
+
+- Fixed an issue (https://github.com/twilio/twilio-voice.js/issues/87, https://github.com/twilio/twilio-voice.js/issues/145) where the `PeerConnection` object is not properly disposed.
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/14) where `device.audio.disconnect`, `device.audio.incoming` and `device.audio.outgoing` do not have the correct type definitions.
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/126) where the internal `deviceinfochange` event is being emitted indefinitely, causing high cpu usage.
+
+2.3.2 (February 27, 2023)
+===================
+
+Bug Fixes
+---------
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/95) where a Twilio error is not returned when microphone access is blocked. Thank you @SiimMardus and @ostap0207 for your [contribution](https://github.com/twilio/twilio-voice.js/pull/143).
+
+2.3.1 (February 3, 2023)
+===================
+
+Bug Fixes
+---------
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/133) where incoming sound will not stop playing after the call is disconnected. Thank you @kamalbennani for your [contribution](https://github.com/twilio/twilio-voice.js/pull/134).
+
+2.3.0 (January 23, 2023)
+===================
+
+Changes
+-------
+
+This release includes updated DNS names for [Twilio Edge Locations](https://www.twilio.com/docs/global-infrastructure/edge-locations). The Voice JS SDK uses these Edge Locations to connect to Twilio’s infrastructure via the parameter `Device.Options.edge`. The current usage of this parameter does not change as the SDK automatically maps the edge value to the new DNS names.
+
+Additionally, you need to update your [Content Security Policies (CSP)](README.md#content-security-policy-csp) if you have it enabled for your application. You also need to update your network configuration such as firewalls, if necessary, to allow connections to the new [DNS names and IP addresses](https://www.twilio.com/docs/voice/sdks/network-connectivity-requirements).
+
+2.2.0 (December 5, 2022)
+===================
+
+New Features
+------------
+
+### Call Message Events (Beta)
+
+The SDK can now send and receive custom messages to and from Twilio's backend via the following new `Call` APIs.
+
+- [sendMessage](https://twilio.github.io/twilio-voice.js/classes/voice.call.html#sendmessage)
+- [messageReceivedEvent](https://twilio.github.io/twilio-voice.js/classes/voice.call.html#messagereceivedevent)
+- [messageSentEvent](https://twilio.github.io/twilio-voice.js/classes/voice.call.html#messagesentevent)
+
+Please visit this [page](https://www.twilio.com/docs/voice/sdks/call-message-events) for more details about this feature. Additionally, please see the following for more information on how to send and receive messages on the server.
+
+- [UserDefinedMessage](https://www.twilio.com/docs/voice/api/userdefinedmessage-resource)
+- [UserDefinedMessageSubscription](https://www.twilio.com/docs/voice/api/userdefinedmessagesubscription-resource)
+
+**NOTE:** This feature should not be used with [PII](https://www.twilio.com/docs/glossary/what-is-personally-identifiable-information-pii).
+
+**Example**
+
+```js
+const device = new Device(token, options);
+
+const setupCallHandlers = call => {
+  call.on('messageReceived', message => messageReceivedHandler(message));
+  call.on('messageSent', message => messageSentHandler(message));
+};
+
+// For outgoing calls
+const call = await device.connect();
+setupCallHandlers(call);
+
+// For incoming calls
+device.on('incoming', call => setupCallHandlers(call));
+await device.register();
+
+// For sending a message
+const eventSid = call.sendMessage({
+  content: { foo: 'foo' },
+  messageType: Call.MessageType.UserDefinedMessage,
+});
+```
+
+2.1.2 (October 26, 2022)
+========================
+
+Bug Fixes
+---------
+
+- Fixed an issue where insights data stops getting published after calling `device.updateOptions`.
+
 2.1.1 (February 18, 2022)
 =========================
 
@@ -9,8 +166,8 @@ Bug Fixes
 - Use DOMException instead of DOMError, which has been deprecated
 - Removed npm util from the package, instead favoring native functions
 
-2.1.0 (December 16, 2021) - Release
-===================================
+2.1.0 (December 16, 2021)
+=========================
 
 New Features
 ------------
@@ -132,8 +289,8 @@ This patch increment was necessary because the 2.0.0 pilot artifact was erroneou
 now removed from npm so that it is not mistakenly used. The first npm artifact will be 2.0.1.
 
 
-2.0.0 (July 7, 2021) - Release
-==============================
+2.0.0 (July 7, 2021)
+====================
 
 ## Migration from twilio-client.js 1.x
 This product, Twilio's JavaScript Voice SDK, is the next version of Twilio's Javascript Client SDK. It is

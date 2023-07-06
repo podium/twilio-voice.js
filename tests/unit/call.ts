@@ -4,7 +4,7 @@ import * as assert from 'assert';
 import { EventEmitter } from 'events';
 import { SinonFakeTimers, SinonSpy, SinonStubbedInstance } from 'sinon';
 import * as sinon from 'sinon';
-import { GeneralErrors, MediaErrors } from '../../lib/twilio/errors';
+import { GeneralErrors, MediaErrors, InvalidStateError, InvalidArgumentError } from '../../lib/twilio/errors';
 
 const Util = require('../../lib/twilio/util');
 
@@ -24,9 +24,12 @@ describe('Call', function() {
   let publisher: any;
   let rtcConfig: RTCConfiguration;
   let soundcache: Map<Device.SoundName, any>;
+  let voiceEventSidGenerator: () => string;
+
+  const wait = (timeout?: number) => new Promise(r => setTimeout(r, timeout || 0));
 
   const MediaHandler = () => {
-    mediaHandler = createEmitterStub(require('../../lib/twilio/rtc/peerconnection'));
+    mediaHandler = createEmitterStub(require('../../lib/twilio/rtc/peerconnection').default);
     mediaHandler.setInputTracksFromStream = sinon.spy((rejectCode?: number) => {
       return rejectCode ? Promise.reject({ code: rejectCode }) : Promise.resolve();
     });
@@ -56,8 +59,8 @@ describe('Call', function() {
     audioHelper = createEmitterStub(require('../../lib/twilio/audiohelper').default);
     getUserMedia = sinon.spy(() => Promise.resolve(new MediaStream()));
     onIgnore = sinon.spy();
-    pstream = createEmitterStub(require('../../lib/twilio/pstream'));
-    publisher = createEmitterStub(require('../../lib/twilio/eventpublisher'));
+    pstream = createEmitterStub(require('../../lib/twilio/pstream').default);
+    publisher = createEmitterStub(require('../../lib/twilio/eventpublisher').default);
     publisher.postMetrics = sinon.spy(() => Promise.resolve());
 
     pstream.transport = {
@@ -68,6 +71,8 @@ describe('Call', function() {
     Object.values(Device.SoundName).forEach((soundName: Device.SoundName) => {
       soundcache.set(soundName, { play: sinon.spy() });
     });
+
+    voiceEventSidGenerator = sinon.stub().returns('foobar-voice-event-sid');
 
     config = {
       audioHelper,
@@ -82,6 +87,7 @@ describe('Call', function() {
     options = {
       MediaHandler,
       StatsMonitor,
+      voiceEventSidGenerator,
     };
 
     conn = new Call(config, options);
@@ -670,8 +676,13 @@ describe('Call', function() {
         });
 
         [
+          'ack',
           'answer',
+          'cancel',
+          'connected',
+          'error',
           'hangup',
+          'message',
           'ringing',
           'transportClose',
         ].forEach((eventName: string) => {
@@ -895,6 +906,11 @@ describe('Call', function() {
         sinon.assert.calledOnce(mediaHandler.reject);
       });
 
+      it('should call mediaHandler.close', () => {
+        conn.reject();
+        sinon.assert.calledOnce(mediaHandler.close);
+      });
+
       it('should emit cancel', (done) => {
         conn.on('reject', () => done());
         conn.reject();
@@ -908,6 +924,40 @@ describe('Call', function() {
       it('should transition status to closed', () => {
         conn.reject();
         assert.equal(conn.status(), 'closed');
+      });
+
+      it('should not emit a disconnect event', () => {
+        const callback = sinon.stub();
+        conn['_mediaHandler'].close = () => mediaHandler.onclose();
+        conn.on('disconnect', callback);
+        conn.reject();
+        clock.tick(10);
+        sinon.assert.notCalled(callback);
+      });
+
+      it('should not play disconnect sound', () => {
+        conn['_mediaHandler'].close = () => mediaHandler.onclose();
+        conn.reject();
+        clock.tick(10);
+        sinon.assert.notCalled(soundcache.get(Device.SoundName.Disconnect).play);
+      });
+
+      [
+        'ack',
+        'answer',
+        'cancel',
+        'connected',
+        'error',
+        'hangup',
+        'message',
+        'ringing',
+        'transportClose',
+      ].forEach((eventName: string) => {
+        it(`should call pstream.removeListener on ${eventName}`, () => {
+          conn.reject();
+          clock.tick(10);
+          assert.equal(pstream.listenerCount(eventName), 0);
+        });
       });
     });
 
@@ -930,6 +980,11 @@ describe('Call', function() {
         it('should not call mediaHandler.reject', () => {
           conn.reject();
           sinon.assert.notCalled(mediaHandler.reject);
+        });
+
+        it('should not call mediaHandler.close', () => {
+          conn.reject();
+          sinon.assert.notCalled(mediaHandler.close);
         });
 
         it('should not emit reject', () => {
@@ -975,6 +1030,98 @@ describe('Call', function() {
     });
   });
 
+  describe('.sendMessage()', () => {
+    let message: Call.Message;
+
+    beforeEach(() => {
+      message = {
+        content: { foo: 'foo' },
+        messageType: Call.MessageType.UserDefinedMessage,
+      };
+    });
+
+    context('when messageType is invalid', () => {
+      [
+        undefined,
+        null,
+        {},
+        1234,
+        true,
+      ].forEach((messageType: any) => {
+        it(`should throw on ${JSON.stringify(messageType)}`, () => {
+          assert.throws(
+            () => conn.sendMessage({ ...message, messageType }),
+            new InvalidArgumentError(
+              '`messageType` must be an enumeration value of ' +
+              '`Call.MessageType` or a string.',
+            ),
+          );
+        });
+      });
+    });
+
+    context('when content is invalid', () => {
+      [
+        undefined,
+        null,
+      ].forEach((content: any) => {
+        it(`should throw on ${JSON.stringify(content)}`, () => {
+          assert.throws(
+            () => conn.sendMessage({ ...message, content }),
+            new InvalidArgumentError('`content` is empty'),
+          );
+        });
+      });
+    });
+
+    it('should throw if pstream is unavailable', () => {
+      // @ts-ignore
+      conn._pstream = null;
+      assert.throws(
+        () => conn.sendMessage(message),
+        new InvalidStateError(
+          'Could not send CallMessage; Signaling channel is disconnected',
+        ),
+      );
+    });
+
+    it('should throw if the call sid is not set', () => {
+      assert.throws(
+        () => conn.sendMessage(message),
+        new InvalidStateError(
+          'Could not send CallMessage; Call has no CallSid',
+        ),
+      );
+    });
+
+    it('should invoke pstream.sendMessage', () => {
+      const mockCallSid = conn.parameters.CallSid = 'foobar-callsid';
+      conn.sendMessage(message);
+      sinon.assert.calledOnceWithExactly(
+        pstream.sendMessage,
+        mockCallSid,
+        message.content,
+        undefined,
+        Call.MessageType.UserDefinedMessage,
+        'foobar-voice-event-sid',
+      );
+    });
+
+    it('should return voiceEventSid', () => {
+      conn.parameters.CallSid = 'foobar-callsid';
+      const sid = conn.sendMessage(message);
+      assert.strictEqual(sid, 'foobar-voice-event-sid');
+    });
+
+    it('should generate a voiceEventSid', () => {
+      conn.parameters.CallSid = 'foobar-callsid';
+      conn.sendMessage(message);
+      sinon.assert.calledOnceWithExactly(
+        voiceEventSidGenerator as sinon.SinonStub,
+      );
+    });
+  });
+
   describe('.sendDigits()', () => {
     context('when digit string is invalid', () => {
       [
@@ -1011,25 +1158,72 @@ describe('Call', function() {
       sinon.assert.callCount(sender.insertDTMF, 3);
     });
 
-    it('should play the sound for each letter', () => {
-      const sender = { insertDTMF: sinon.spy() };
-      mediaHandler.getOrCreateDTMFSender = () => sender;
-      conn.sendDigits('123w456w#*w');
+    describe('when playing sound', () => {
+      const digits = '0123w456789w*#w';
+      let dialtonePlayer: any;
 
-      clock.tick(1 + 200);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf1).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf2).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf3).play, 0);
+      [{
+        name: 'dialtonePlayer',
+        getOptions: () => {
+          dialtonePlayer = { play: sinon.stub() };
+          options.dialtonePlayer = dialtonePlayer;
+          return options;
+        },
+        assert: (dtmf: string, digit: string) => {
+          sinon.assert.callCount(dialtonePlayer.play, digits.replace(/w/g, '').indexOf(digit) + 1);
+          sinon.assert.calledWithExactly(dialtonePlayer.play, dtmf);
+        },
+      },{
+        name: 'soundcache',
+        getOptions: () => options,
+        assert: (dtmf: string) => {
+          const playStub = soundcache.get(dtmf as Device.SoundName).play;
+          sinon.assert.callCount(playStub, 1);
+        },
+      },{
+        name: 'customSounds',
+        getOptions: () => {
+          dialtonePlayer = { play: sinon.stub() };
 
-      clock.tick(1 + (200 * 7) + (500 * 3));
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf1).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf2).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf3).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf4).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf5).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.Dtmf6).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.DtmfS).play, 1);
-      sinon.assert.callCount(soundcache.get(Device.SoundName.DtmfH).play, 1);
+          return {
+            ...options,
+            dialtonePlayer,
+            customSounds: Object.values(Device.SoundName)
+              .filter(name => name.includes('dtmf'))
+              .reduce((customSounds, name) => {
+                customSounds[name] = name;
+                return customSounds;
+              }, {} as any)
+          };
+        },
+        assert: (dtmf: string, digit: string) => {
+          const playStub = soundcache.get(dtmf as Device.SoundName).play;
+          sinon.assert.callCount(playStub, 1);
+        },
+      }].forEach(({ name, assert, getOptions }) => {
+        it(`should play the sound for each letter using ${name}`, () => {
+          const o = getOptions();
+          conn = new Call(config, o);
+
+          const sender = { insertDTMF: sinon.spy() };
+          mediaHandler.getOrCreateDTMFSender = () => sender;
+          conn.sendDigits(digits);
+
+          clock.tick(1);
+          digits.split('').forEach((digit) => {
+            if (digit === 'w') {
+              clock.tick(200);
+              return;
+            }
+            let dtmf = `dtmf${digit}`;
+            if (dtmf === 'dtmf*') { dtmf = 'dtmfs'; }
+            if (dtmf === 'dtmf#') { dtmf = 'dtmfh'; }
+
+            assert(dtmf, digit);
+            clock.tick(200);
+          });
+        });
+      })
     });
 
     it('should call pstream.dtmf if connected', () => {
@@ -1559,46 +1753,250 @@ describe('Call', function() {
     describe('pstream.answer event', () => {
       let pStreamAnswerPayload: any;
 
-      beforeEach(async () => {
+      beforeEach(() => {
         pStreamAnswerPayload = {
           edge: 'foobar-edge',
           reconnect: 'foobar-reconnect-token',
         };
-        conn = new Call(config, options);
-        conn.accept();
-        await clock.tickAsync(0);
       });
 
-      it('should set the call to "answered"', () => {
-        pstream.emit('answer', pStreamAnswerPayload);
-        assert(conn['_isAnswered']);
-      });
+      describe('for incoming calls', () => {
+        beforeEach(async () => {
+          // With a CallSid, this becomes an incoming call
+          const callParameters = { CallSid: 'CA1234' };
+          conn = new Call(config, Object.assign(options, { callParameters }));
+          conn.accept();
+          await clock.tickAsync(0);
+        });
 
-      it('should save the reconnect token', () => {
-        pstream.emit('answer', pStreamAnswerPayload);
-        assert.equal(conn['_signalingReconnectToken'], pStreamAnswerPayload.reconnect);
-      });
-
-      describe('if raised multiple times', () => {
-        it('should save the reconnect token multiple times', () => {
+        it('should remove event handler after disconnect for an incoming call', () => {
           pstream.emit('answer', pStreamAnswerPayload);
-          assert.equal(conn['_signalingReconnectToken'], pStreamAnswerPayload.reconnect);
+          conn.disconnect();
+          assert.strictEqual(pstream.listenerCount('answer'), 0);
+        });
+      });
 
-          pStreamAnswerPayload.reconnect = 'biffbazz-reconnect-token';
+      describe('for outgoing calls', () => {
+        beforeEach(async () => {
+          conn = new Call(config, options);
+          conn.accept();
+          await clock.tickAsync(0);
+        });
 
+        it('should set the call to "answered"', () => {
+          pstream.emit('answer', pStreamAnswerPayload);
+          assert(conn['_isAnswered']);
+        });
+
+        it('should save the reconnect token', () => {
           pstream.emit('answer', pStreamAnswerPayload);
           assert.equal(conn['_signalingReconnectToken'], pStreamAnswerPayload.reconnect);
         });
 
-        it('should not invoke "call._maybeTransitionToOpen" more than once', () => {
-          const spy = conn['_maybeTransitionToOpen'] = sinon.spy(conn['_maybeTransitionToOpen']);
-
+        it('should remove event handler after disconnect for an outgoing call', () => {
           pstream.emit('answer', pStreamAnswerPayload);
-          sinon.assert.calledOnce(spy);
-
-          pstream.emit('answer', pStreamAnswerPayload);
-          sinon.assert.calledOnce(spy);
+          conn.disconnect();
+          assert.strictEqual(pstream.listenerCount('answer'), 0);
         });
+
+        describe('if raised multiple times', () => {
+          it('should save the reconnect token multiple times', () => {
+            pstream.emit('answer', pStreamAnswerPayload);
+            assert.equal(conn['_signalingReconnectToken'], pStreamAnswerPayload.reconnect);
+
+            pStreamAnswerPayload.reconnect = 'biffbazz-reconnect-token';
+
+            pstream.emit('answer', pStreamAnswerPayload);
+            assert.equal(conn['_signalingReconnectToken'], pStreamAnswerPayload.reconnect);
+          });
+
+          it('should not invoke "call._maybeTransitionToOpen" more than once', () => {
+            const spy = conn['_maybeTransitionToOpen'] = sinon.spy(conn['_maybeTransitionToOpen']);
+
+            pstream.emit('answer', pStreamAnswerPayload);
+            sinon.assert.calledOnce(spy);
+
+            pstream.emit('answer', pStreamAnswerPayload);
+            sinon.assert.calledOnce(spy);
+          });
+        });
+      });
+    });
+
+    describe('pstream.ack event', () => {
+      const mockcallsid = 'mock-callsid';
+      let mockMessagePayload: any;
+      let mockAckPayload: any;
+
+      beforeEach(() => {
+        mockMessagePayload = {
+          content: {
+            foo: 'bar',
+          },
+          contentType: 'application/json',
+          messageType: 'foo-bar',
+        };
+
+        mockAckPayload = {
+          acktype: 'message',
+          callsid: mockcallsid,
+          voiceeventsid: 'mockvoiceeventsid',
+        };
+
+        conn.parameters = {
+          ...conn.parameters,
+          CallSid: mockcallsid,
+        };
+        clock.restore();
+      });
+
+      it('should emit messageSent', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve) => {
+          conn.on('messageSent', resolve);
+        });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        assert.deepEqual(await payloadPromise, { ...mockMessagePayload, voiceEventSid: sid });
+      });
+
+      it('should ignore ack when callSids do not match', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve, reject) => {
+          conn.on('messageSent', reject);
+        });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid, callsid: 'foo' });
+        await Promise.race([
+          wait(1),
+          payloadPromise,
+        ]);
+      });
+
+      it('should not emit messageSent when acktype is not `message`', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve, reject) => {
+          conn.on('messageSent', reject);
+        });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid, acktype: 'foo' });
+        await Promise.race([
+          wait(1),
+          payloadPromise,
+        ]);
+      });
+
+      it('should not emit messageSent if voiceEventSid was not previously sent', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve, reject) => {
+          conn.on('messageSent', reject);
+        });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: 'foo' });
+        await Promise.race([
+          wait(1),
+          payloadPromise,
+        ]);
+      });
+
+      it('should emit messageSent only once', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const handler = sinon.stub();
+        const payloadPromise = new Promise((resolve) => {
+          conn.on('messageSent', () => {
+            handler();
+            resolve(null);
+          });
+        });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        await payloadPromise;
+        sinon.assert.calledOnce(handler);
+      });
+
+      it('should not emit messageSent after an error', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve, reject) => {
+          conn.on('messageSent', reject);
+        });
+        pstream.emit('error', { callsid: mockcallsid, voiceeventsid: sid });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        await Promise.race([
+          wait(1),
+          payloadPromise,
+        ]);
+      });
+
+      it('should ignore errors with different callsid', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve) => {
+          conn.on('messageSent', resolve);
+        });
+        pstream.emit('error', { callsid: 'foo', voiceeventsid: sid });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        await payloadPromise;
+      });
+
+      it('should ignore errors with different voiceeventsid', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve) => {
+          conn.on('messageSent', resolve);
+        });
+        pstream.emit('error', { callsid: mockcallsid, voiceeventsid: 'foo' });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        await payloadPromise;
+      });
+
+      it('should ignore errors with missing voiceeventsid', async () => {
+        const sid = conn.sendMessage(mockMessagePayload);
+        const payloadPromise = new Promise((resolve) => {
+          conn.on('messageSent', resolve);
+        });
+        pstream.emit('error', { callsid: mockcallsid });
+        pstream.emit('ack', { ...mockAckPayload, voiceeventsid: sid });
+        await payloadPromise;
+      });
+    });
+
+    describe('pstream.message event', () => {
+      const mockcallsid = 'mock-callsid';
+      let mockPayload: any;
+
+      beforeEach(() => {
+        mockPayload = {
+          callsid: mockcallsid,
+          content: {
+            foo: 'bar',
+          },
+          contenttype: 'application/json',
+          messagetype: 'foo-bar',
+          voiceeventsid: 'mock-voiceeventsid-foobar',
+        };
+        conn.parameters = {
+          ...conn.parameters,
+          CallSid: mockcallsid,
+        };
+        clock.restore();
+      });
+
+      it('should emit messageReceived', async () => {
+        const payloadPromise = new Promise((resolve) => {
+          conn.on('messageReceived', resolve);
+        });
+        pstream.emit('message', mockPayload);
+        assert.deepEqual(await payloadPromise, {
+          content: mockPayload.content,
+          contentType: mockPayload.contenttype,
+          messageType: mockPayload.messagetype,
+          voiceEventSid: mockPayload.voiceeventsid,
+        });
+      });
+
+      it('should ignore messages when callSids do not match', async () => {
+        const messagePromise = new Promise((resolve, reject) => {
+          conn.on('messageReceived', reject);
+        });
+        pstream.emit('message', { ...mockPayload, callsid: 'foo' });
+        await Promise.race([
+          wait(1),
+          messagePromise,
+        ]);
       });
     });
   });

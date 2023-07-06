@@ -1,27 +1,21 @@
-const XHR = require('xmlhttprequest').XMLHttpRequest;
+/**
+ * @packageDocumentation
+ * @module Voice
+ * @internalapi
+ */
+// @ts-nocheck
 
 function request(method, params, callback) {
-  const options = {};
-  options.XMLHttpRequest = options.XMLHttpRequest || XHR;
-  const xhr = new options.XMLHttpRequest();
+  const body = JSON.stringify(params.body || {});
+  const headers = new Headers();
 
-  xhr.open(method, params.url, true);
-  xhr.onreadystatechange = function onreadystatechange() {
-    if (xhr.readyState !== 4) { return; }
+  params.headers = params.headers || [];
+  Object.entries(params.headers).forEach(([headerName, headerBody]) =>
+    headers.append(headerName, headerBody));
 
-    if (200 <= xhr.status && xhr.status < 300) {
-      callback(null, xhr.responseText);
-      return;
-    }
-
-    callback(new Error(xhr.responseText));
-  };
-
-  for (const headerName in params.headers) {
-    xhr.setRequestHeader(headerName, params.headers[headerName]);
-  }
-
-  xhr.send(JSON.stringify(params.body));
+  fetch(params.url, { body, headers, method })
+    .then(response => response.text(), callback)
+    .then(responseText => callback(null, responseText), callback);
 }
 /**
  * Use XMLHttpRequest to get a network resource.
@@ -31,7 +25,7 @@ function request(method, params, callback) {
  * @param {Array}  params.headers - An array of headers to pass [{ headerName : headerBody }]
  * @param {Object} params.body - A JSON body to send to the resource
  * @returns {response}
- **/
+ */
 const Request = request;
 
 /**
@@ -52,4 +46,4 @@ Request.post = function post(params, callback) {
   return new this('POST', params, callback);
 };
 
-module.exports = Request;
+export default Request;

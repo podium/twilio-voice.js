@@ -7,10 +7,9 @@ import Device from './device';
 import { InvalidArgumentError, NotSupportedError } from './errors';
 import Log from './log';
 import OutputDeviceCollection from './outputdevicecollection';
-import * as defaultMediaDevices from './shims/mediadevices';
+import MediaDeviceInfoShim from './shims/mediadeviceinfo';
+import getMediaDevicesInstance from './shims/mediadevices';
 import { average, difference, isFirefox } from './util';
-
-const MediaDeviceInfoShim = require('./shims/mediadeviceinfo');
 
 /**
  * Aliases for audio kinds, used for labelling.
@@ -91,6 +90,20 @@ class AudioHelper extends EventEmitter {
   private _audioContext?: AudioContext;
 
   /**
+   * Whether each sound is enabled.
+   */
+  private _enabledSounds: Record<Device.ToggleableSound, boolean> = {
+    [Device.SoundName.Disconnect]: true,
+    [Device.SoundName.Incoming]: true,
+    [Device.SoundName.Outgoing]: true,
+  };
+
+  /**
+   * The enumerateDevices method to use
+   */
+  private _enumerateDevices: any;
+
+  /**
    * The `getUserMedia()` function to use.
    */
   private _getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
@@ -163,18 +176,22 @@ class AudioHelper extends EventEmitter {
     }, options);
 
     this._getUserMedia = getUserMedia;
-    this._mediaDevices = options.mediaDevices || defaultMediaDevices;
+    this._mediaDevices = options.mediaDevices || getMediaDevicesInstance() as AudioHelper.MediaDevicesLike;
     this._onActiveInputChanged = onActiveInputChanged;
+    this._enumerateDevices = typeof options.enumerateDevices === 'function'
+      ? options.enumerateDevices
+      : this._mediaDevices && this._mediaDevices.enumerateDevices;
 
     const isAudioContextSupported: boolean = !!(options.AudioContext || options.audioContext);
-    const isEnumerationSupported: boolean = !!(this._mediaDevices && this._mediaDevices.enumerateDevices);
+    const isEnumerationSupported: boolean = !!this._enumerateDevices;
+
+    if (options.enabledSounds) {
+      this._enabledSounds = options.enabledSounds;
+    }
+
     const isSetSinkSupported: boolean = typeof options.setSinkId === 'function';
     this.isOutputSelectionSupported = isEnumerationSupported && isSetSinkSupported;
     this.isVolumeSupported = isAudioContextSupported;
-
-    if (options.enabledSounds) {
-      this._addEnabledSounds(options.enabledSounds);
-    }
 
     if (this.isVolumeSupported) {
       this._audioContext = options.audioContext || options.AudioContext && new options.AudioContext();
@@ -219,6 +236,14 @@ class AudioHelper extends EventEmitter {
     if (isEnumerationSupported) {
       this._initializeEnumeration();
     }
+  }
+
+  /**
+   * Current state of the enabled sounds
+   * @private
+   */
+  _getEnabledSounds(): Record<Device.ToggleableSound, boolean> {
+    return this._enabledSounds;
   }
 
   /**
@@ -277,7 +302,7 @@ class AudioHelper extends EventEmitter {
    * @private
    */
   _unbind(): void {
-    if (!this._mediaDevices) {
+    if (!this._mediaDevices || !this._enumerateDevices) {
       throw new NotSupportedError('Enumeration is not supported');
     }
 
@@ -285,6 +310,36 @@ class AudioHelper extends EventEmitter {
       this._mediaDevices.removeEventListener('devicechange', this._updateAvailableDevices);
       this._mediaDevices.removeEventListener('deviceinfochange', this._updateAvailableDevices);
     }
+  }
+
+  /**
+   * Enable or disable the disconnect sound.
+   * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
+   * Not passing this parameter will not alter the enable-status of the sound.
+   * @returns The enable-status of the sound.
+   */
+  disconnect(doEnable?: boolean): boolean {
+    return this._maybeEnableSound(Device.SoundName.Disconnect, doEnable);
+  }
+
+  /**
+   * Enable or disable the incoming sound.
+   * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
+   * Not passing this parameter will not alter the enable-status of the sound.
+   * @returns The enable-status of the sound.
+   */
+  incoming(doEnable?: boolean): boolean {
+    return this._maybeEnableSound(Device.SoundName.Incoming, doEnable);
+  }
+
+  /**
+   * Enable or disable the outgoing sound.
+   * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
+   * Not passing this parameter will not alter the enable-status of the sound.
+   * @returns The enable-status of the sound.
+   */
+  outgoing(doEnable?: boolean): boolean {
+    return this._maybeEnableSound(Device.SoundName.Outgoing, doEnable);
   }
 
   /**
@@ -344,27 +399,6 @@ class AudioHelper extends EventEmitter {
   }
 
   /**
-   * Merge the passed enabledSounds into {@link AudioHelper}. Currently used to merge the deprecated
-   *   Device.sounds object onto the new {@link AudioHelper} interface. Mutates
-   *   by reference, sharing state between {@link Device} and {@link AudioHelper}.
-   * @param enabledSounds - The initial sound settings to merge.
-   * @private
-   */
-  private _addEnabledSounds(enabledSounds: { [name: string]: boolean }) {
-    function setValue(key: Device.ToggleableSound, value: boolean) {
-      if (typeof value !== 'undefined') {
-        enabledSounds[key] = value;
-      }
-
-      return enabledSounds[key];
-    }
-
-    Object.keys(enabledSounds).forEach(key => {
-      (this as any)[key] = setValue.bind(null, key);
-    });
-  }
-
-  /**
    * Get the index of an un-labeled Device.
    * @param mediaDeviceInfo
    * @returns The index of the passed MediaDeviceInfo
@@ -386,7 +420,7 @@ class AudioHelper extends EventEmitter {
    * Initialize output device enumeration.
    */
   private _initializeEnumeration(): void {
-    if (!this._mediaDevices) {
+    if (!this._mediaDevices || !this._enumerateDevices) {
       throw new NotSupportedError('Enumeration is not supported');
     }
 
@@ -405,6 +439,19 @@ class AudioHelper extends EventEmitter {
         this._log.warn(`Warning: Unable to set audio output devices. ${reason}`);
       });
     });
+  }
+
+  /**
+   * Set whether the sound is enabled or not
+   * @param soundName
+   * @param doEnable
+   * @returns Whether the sound is enabled or not
+   */
+  private _maybeEnableSound(soundName: Device.ToggleableSound, doEnable?: boolean): boolean {
+    if (typeof doEnable !== 'undefined') {
+      this._enabledSounds[soundName] = doEnable;
+    }
+    return this._enabledSounds[soundName];
   }
 
   /**
@@ -499,11 +546,11 @@ class AudioHelper extends EventEmitter {
    * Update the available input and output devices
    */
   private _updateAvailableDevices = (): Promise<void> => {
-    if (!this._mediaDevices) {
+    if (!this._mediaDevices || !this._enumerateDevices) {
       return Promise.reject('Enumeration not supported');
     }
 
-    return this._mediaDevices.enumerateDevices().then((devices: MediaDeviceInfo[]) => {
+    return this._enumerateDevices().then((devices: MediaDeviceInfo[]) => {
       this._updateDevices(devices.filter((d: MediaDeviceInfo) => d.kind === 'audiooutput'),
         this.availableOutputDevices,
         this._removeLostOutput);
@@ -591,8 +638,13 @@ class AudioHelper extends EventEmitter {
       this._inputVolumeSource.disconnect();
     }
 
-    this._inputVolumeSource = this._audioContext.createMediaStreamSource(this._inputStream);
-    this._inputVolumeSource.connect(this._inputVolumeAnalyser);
+    try {
+      this._inputVolumeSource = this._audioContext.createMediaStreamSource(this._inputStream);
+      this._inputVolumeSource.connect(this._inputVolumeAnalyser);
+    } catch (ex) {
+      this._log.warn('Unable to update volume source', ex);
+      delete this._inputVolumeSource;
+    }
   }
 
   /**
@@ -670,11 +722,14 @@ namespace AudioHelper {
     audioContext?: AudioContext;
 
     /**
-     * A Record of sounds. This is modified by reference, and is used to
-     * maintain backward-compatibility. This should be removed or refactored in 2.0.
-     * TODO: Remove / refactor in 2.0. (CLIENT-5302)
+     * Whether each sound is enabled.
      */
     enabledSounds?: Record<Device.ToggleableSound, boolean>;
+
+    /**
+     * Overrides the native MediaDevices.enumerateDevices API.
+     */
+    enumerateDevices?: any;
 
     /**
      * A custom MediaDevices instance to use.
