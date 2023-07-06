@@ -1,4 +1,8 @@
-export = MockRTCStatsReport;
+/**
+ * @packageDocumentation
+ * @module Voice
+ * @internalapi
+ */
 /**
  * Create a MockRTCStatsReport wrapper around a Map of RTCStats objects. If RTCStatsReport is available
  *   natively, it will be inherited so that instanceof checks pass.
@@ -7,17 +11,10 @@ export = MockRTCStatsReport;
  * @param {Map<string, RTCStats>} statsMap - A Map of RTCStats objects to wrap
  *   with a MockRTCStatsReport object.
  */
-declare function MockRTCStatsReport(statsMap: Map<string, RTCStats>): MockRTCStatsReport;
-declare class MockRTCStatsReport {
-    /**
-     * Create a MockRTCStatsReport wrapper around a Map of RTCStats objects. If RTCStatsReport is available
-     *   natively, it will be inherited so that instanceof checks pass.
-     * @constructor
-     * @extends RTCStatsReport
-     * @param {Map<string, RTCStats>} statsMap - A Map of RTCStats objects to wrap
-     *   with a MockRTCStatsReport object.
-     */
-    constructor(statsMap: Map<string, RTCStats>);
-    constructor: typeof MockRTCStatsReport;
+declare function MockRTCStatsReport(statsMap: any): any;
+declare namespace MockRTCStatsReport {
+    var prototype: any;
+    var fromArray: (array: any) => any;
+    var fromRTCStatsResponse: (statsResponse: any) => any;
 }
-declare namespace MockRTCStatsReport { }
+export default MockRTCStatsReport;

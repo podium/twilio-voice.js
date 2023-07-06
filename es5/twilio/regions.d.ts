@@ -1,17 +1,4 @@
 /**
- * Valid deprecated regions.
- * @private
- */
-export declare enum DeprecatedRegion {
-    Au = "au",
-    Br = "br",
-    Ie = "ie",
-    Jp = "jp",
-    Sg = "sg",
-    UsOr = "us-or",
-    UsVa = "us-va"
-}
-/**
  * Valid edges.
  * @private
  */
@@ -78,16 +65,6 @@ export declare enum Region {
     Us2Tnx = "us2-tnx"
 }
 /**
- * All valid regions
- * @private
- */
-export declare type ValidRegion = Region | DeprecatedRegion;
-/**
- * Deprecated regions. Maps the deprecated region to its equivalent up-to-date region.
- * @private
- */
-export declare const deprecatedRegions: Record<DeprecatedRegion, Region>;
-/**
  * Region shortcodes. Maps the full region name from AWS to the Twilio shortcode.
  * @private
  */
@@ -95,36 +72,17 @@ export declare const regionShortcodes: {
     [index: string]: Region;
 };
 /**
- * Edge to region mapping, as part of Phase 1 Regional (CLIENT-7519).
- * Temporary.
- * @private
- */
-export declare const edgeToRegion: Record<Edge, Region>;
-/**
  * Region to edge mapping, as part of Phase 1 Regional (CLIENT-7519).
  * Temporary.
  * @private
  */
 export declare const regionToEdge: Record<Region, Edge>;
 /**
- * The default region to connect to and create a chunder uri from if region is
- * not defined.
- * @constant
- * @private
- */
-export declare const defaultRegion: string;
-/**
  * The default edge to connect to and create a chunder uri from, if the edge
  * parameter is not specified during setup in `Device`.
  * @constant
  */
 export declare const defaultEdge: Edge;
-/**
- * The default chunder URI to connect to, should map to region `gll`.
- * @constant
- * @private
- */
-export declare const defaultChunderRegionURI: string;
 /**
  * String template for a region insights URI
  * @param region - The region.
@@ -136,19 +94,12 @@ export declare function createEventGatewayURI(region: string): string;
  */
 export declare function createSignalingEndpointURL(uri: string): string;
 /**
- * Get the URI associated with the passed region or edge. If both are passed,
- * then we want to fail `Device` setup, so we throw an error.
- * As of CLIENT-7519, Regions are deprecated in favor of edges as part of
- * Phase 1 Regional.
- *
+ * Get the URI associated with the passed edge.
  * @private
  * @param edge - A string or an array of edge values
- * @param region - The region shortcode.
- * @param [onDeprecated] - A callback containing the deprecation message to be
- *   warned when the passed parameters are deprecated.
  * @returns An array of chunder URIs
  */
-export declare function getChunderURIs(edge: string[] | string | undefined, region: string | undefined, onDeprecated?: (message: string) => void): string[];
+export declare function getChunderURIs(edge?: string[] | string): string[];
 /**
  * Get the region shortcode by its full AWS region string.
  *

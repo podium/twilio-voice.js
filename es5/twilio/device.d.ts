@@ -85,6 +85,10 @@ export interface IExtendedDeviceOptions extends Device.Options {
      * Custom Sound constructor
      */
     Sound?: ISound;
+    /**
+     * Voice event SID generator.
+     */
+    voiceEventSidGenerator?: () => string;
 }
 /**
  * A sound definition used to initialize a Sound file.
@@ -202,10 +206,6 @@ declare class Device extends EventEmitter {
      * The name of the edge the {@link Device} is connected to.
      */
     private _edge;
-    /**
-     * Whether each sound is enabled.
-     */
-    private _enabledSounds;
     /**
      * The name of the home region the {@link Device} is connected to.
      */
@@ -358,6 +358,8 @@ declare class Device extends EventEmitter {
     updateOptions(options?: Device.Options): void;
     /**
      * Update the token used by this {@link Device} to connect to Twilio.
+     * It is recommended to call this API after [[Device.tokenWillExpireEvent]] is emitted,
+     * and before or after a call to prevent a potential ~1s audio loss during the update process.
      * @param token
      */
     updateToken(token: string): void;
@@ -600,10 +602,18 @@ declare namespace Device {
          */
         edge?: string[] | string;
         /**
+         * Overrides the native MediaDevices.enumerateDevices API.
+         */
+        enumerateDevices?: any;
+        /**
          * Experimental feature.
          * Whether to use ICE Aggressive nomination.
          */
         forceAggressiveIceNomination?: boolean;
+        /**
+         * Overrides the native MediaDevices.getUserMedia API.
+         */
+        getUserMedia?: any;
         /**
          * Log level.
          */
@@ -632,6 +642,45 @@ declare namespace Device {
          * is explicitly specified within the Device options.
          */
         maxCallSignalingTimeoutMs?: number;
+        /**
+         * Overrides the native RTCPeerConnection class.
+         *
+         * By default, the SDK will use the `unified-plan` SDP format if the browser supports it.
+         * Unexpected behavior may happen if the `RTCPeerConnection` parameter uses an SDP format
+         * that is different than what the SDK uses.
+         *
+         * For example, if the browser supports `unified-plan` and the `RTCPeerConnection`
+         * parameter uses `plan-b` by default, the SDK will use `unified-plan`
+         * which will cause conflicts with the usage of the `RTCPeerConnection`.
+         *
+         * In order to avoid this issue, you need to explicitly set the SDP format that you want
+         * the SDK to use with the `RTCPeerConnection` via [[Device.ConnectOptions.rtcConfiguration]] for outgoing calls.
+         * Or [[Call.AcceptOptions.rtcConfiguration]] for incoming calls.
+         *
+         * See the example below. Assuming the `RTCPeerConnection` you provided uses `plan-b` by default, the following
+         * code sets the SDP format to `unified-plan` instead.
+         *
+         * ```ts
+         * // Outgoing calls
+         * const call = await device.connect({
+         *   rtcConfiguration: {
+         *     sdpSemantics: 'unified-plan'
+         *   }
+         *   // Other options
+         * });
+         *
+         * // Incoming calls
+         * device.on('incoming', call => {
+         *   call.accept({
+         *     rtcConfiguration: {
+         *       sdpSemantics: 'unified-plan'
+         *     }
+         *     // Other options
+         *   });
+         * });
+         * ```
+         */
+        RTCPeerConnection?: any;
         /**
          * A mapping of custom sound URLs by sound name.
          */

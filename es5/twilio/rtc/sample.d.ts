@@ -4,7 +4,7 @@
  * @publicapi
  */
 /**
- * Sample RTC statistics. See [[Connection.sampleEvent]]
+ * Sample RTC statistics. See [[Call.sampleEvent]]
  */
 export default interface RTCSample {
     [key: string]: any;
