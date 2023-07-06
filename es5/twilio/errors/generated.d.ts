@@ -1,8 +1,7 @@
 /**
  * @packageDocumentation
  * @module Voice
- * @publicapi
- * @internal
+ * @internalapi
  */
 /**
  * This is a generated file. Any modifications here will be overwritten. See scripts/errors.js.
@@ -99,6 +98,46 @@ export declare namespace GeneralErrors {
         constructor(message: string, error: Error | object);
     }
     class TransportError extends TwilioError {
+        causes: string[];
+        code: number;
+        description: string;
+        explanation: string;
+        name: string;
+        solutions: string[];
+        constructor();
+        constructor(message: string);
+        constructor(error: Error | object);
+        constructor(message: string, error: Error | object);
+    }
+}
+export declare namespace MalformedRequestErrors {
+    class MalformedRequestError extends TwilioError {
+        causes: string[];
+        code: number;
+        description: string;
+        explanation: string;
+        name: string;
+        solutions: string[];
+        constructor();
+        constructor(message: string);
+        constructor(error: Error | object);
+        constructor(message: string, error: Error | object);
+    }
+}
+export declare namespace AuthorizationErrors {
+    class RateExceededError extends TwilioError {
+        causes: string[];
+        code: number;
+        description: string;
+        explanation: string;
+        name: string;
+        solutions: string[];
+        constructor();
+        constructor(message: string);
+        constructor(error: Error | object);
+        constructor(message: string, error: Error | object);
+    }
+    class PayloadSizeExceededError extends TwilioError {
         causes: string[];
         code: number;
         description: string;

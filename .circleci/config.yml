@@ -64,7 +64,7 @@ commands:
           key: dependency-cache-{{ checksum "package.json" }}
       - run:
           name: Installing dependencies
-          command: node -v && npm install --legacy-peer-deps
+          command: node -v && npm install
       - save_cache:
           key: dependency-cache-{{ checksum "package.json" }}
           paths:
@@ -78,12 +78,15 @@ commands:
       - store_artifacts:
           path: ./dist
           prefix: ./dist
-  unit-tests:
+  build-checks:
     steps:
       - build
       - run:
-          name: Running unit tests
-          command: npm run test:unit
+          name: Running build checks
+          command: npm run test:es5 && npm run test:typecheck && npm run lint && npm run test:unit
+      - store_artifacts:
+          path: coverage
+          destination: coverage
   integration-tests:
     steps:
       - build
@@ -102,9 +105,9 @@ commands:
 # Jobs
 ###
 jobs:
-  run-unit-tests:
+  run-build-checks:
     executor: docker-with-browser
-    steps: [unit-tests]
+    steps: [build-checks]
   run-network-tests:
     parameters:
       bver:
@@ -165,16 +168,38 @@ jobs:
 # Workflows
 ###
 workflows:
+  daily-build-workflow:
+    triggers:
+      - schedule:
+          cron: "0 16 * * *"
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - run-build-checks:
+          context:
+            - vblocks-js
+          name: Build Checks
+      - run-integration-tests:
+          name: Integration Tests <<matrix.browser>> <<matrix.bver>>
+          context:
+            - dockerhub-pulls
+            - vblocks-js
+          matrix:
+            parameters:
+              browser: ["chrome", "firefox"]
+              bver: ["beta", "unstable", "stable"]
   pull-request-workflow:
     when:
         and:
           - equal: [true, <<pipeline.parameters.pr_workflow>>]
           - equal: [false, <<pipeline.parameters.release_workflow>>]
     jobs:
-      - run-unit-tests:
+      - run-build-checks:
           context:
             - vblocks-js
-          name: Unit Tests
+          name: Build Checks
       - run-integration-tests:
           name: Integration Tests <<matrix.browser>> <<matrix.bver>>
           context:
@@ -197,10 +222,10 @@ workflows:
   release-workflow:
     when: <<pipeline.parameters.release_workflow>>
     jobs:
-      - run-unit-tests:
+      - run-build-checks:
           context:
             - vblocks-js
-          name: Unit Tests
+          name: Build Checks
       - run-integration-tests:
           context:
             - dockerhub-pulls
@@ -227,7 +252,7 @@ workflows:
           name: Create Release Dry Run
           dryRun: true
           requires:
-            - Unit Tests
+            - Build Checks
             # NOTE(mhuynh): Temporarily allow release without these tests passing
             # # Chrome integration tests
             # - Integration Tests chrome beta

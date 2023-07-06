@@ -8,10 +8,9 @@ import { EventEmitter } from 'events';
 import { InvalidArgumentError } from './errors';
 import Mos from './rtc/mos';
 import RTCSample from './rtc/sample';
+import { getRTCStats } from './rtc/stats';
 import RTCWarning from './rtc/warning';
 import { average } from './util';
-
-const { getRTCStats } = require('./rtc/stats');
 
 // How many samples we use when testing metric thresholds
 const SAMPLE_COUNT_METRICS = 5;
@@ -136,7 +135,7 @@ class StatsMonitor extends EventEmitter {
   /**
    * Method to get stats from a PeerConnection object. Overrides getRTCStats library
    */
-  private _getRTCStats: (peerConnection: IPeerConnection) => IRTCStats;
+  private _getRTCStats: (peerConnection: IPeerConnection, options?: any) => IRTCStats;
 
   /**
    * Keeps track of input volumes in the last second
@@ -171,7 +170,7 @@ class StatsMonitor extends EventEmitter {
   /**
    * The setInterval id for fetching samples.
    */
-  private _sampleInterval: NodeJS.Timer;
+  private _sampleInterval?: NodeJS.Timer;
 
   /**
    * Keeps track of supplemental sample values.
@@ -233,9 +232,10 @@ class StatsMonitor extends EventEmitter {
    * @returns The current {@link StatsMonitor}.
    */
   disable(): this {
-    clearInterval(this._sampleInterval);
-    delete this._sampleInterval;
-
+    if (this._sampleInterval) {
+      clearInterval(this._sampleInterval);
+      delete this._sampleInterval;
+    }
     return this;
   }
 

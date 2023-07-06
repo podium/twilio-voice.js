@@ -62,7 +62,7 @@ declare class StatsMonitor extends EventEmitter {
     /**
      * The setInterval id for fetching samples.
      */
-    private _sampleInterval;
+    private _sampleInterval?;
     /**
      * Keeps track of supplemental sample values.
      *

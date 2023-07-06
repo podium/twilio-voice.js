@@ -1,20 +1,8 @@
-export var Exception: typeof TwilioException;
-export function average(values: any): number;
-export function difference(lefts: any, rights: any, getKey: any): any;
-export function isElectron(navigator: any): boolean;
-export function isChrome(window: any, navigator: any): boolean;
-export function isFirefox(navigator: any): boolean;
-export function isLegacyEdge(navigator: any): boolean;
-export function isSafari(navigator: any): boolean;
-export function isUnifiedPlanDefault(window: any, navigator: any, PeerConnection: any, RtpTransceiver: any): boolean;
-export function queryToJson(params: any): any;
 /**
- * Map a list to an array of arrays, and return the flattened result.
- * @param {Array<*>|Set<*>|Map<*>} list
- * @param {function(*): Array<*>} [mapFn]
- * @returns Array<*>
+ * @packageDocumentation
+ * @module Voice
+ * @internalapi
  */
-export function flatMap(list: any[] | Map<any, any> | Set<any>, mapFn?: ((arg0: any) => any[]) | undefined): any;
 /**
  * Exception class.
  * @class
@@ -23,18 +11,22 @@ export function flatMap(list: any[] | Map<any, any> | Set<any>, mapFn?: ((arg0: 
  * @memberOf Twilio
  * @param {string} message The exception message
  */
-declare function TwilioException(message: string): TwilioException;
-declare class TwilioException {
-    /**
-     * Exception class.
-     * @class
-     * @name Exception
-     * @exports Exception as Twilio.Exception
-     * @memberOf Twilio
-     * @param {string} message The exception message
-     */
-    constructor(message: string);
-    message: string;
-    toString(): string;
-}
-export {};
+declare function TwilioException(message: any): any;
+declare function average(values: any): number;
+declare function difference(lefts: any, rights: any, getKey?: any): any;
+declare function isElectron(navigator: any): boolean;
+declare function isChrome(window: any, navigator: any): boolean;
+declare function isFirefox(navigator?: any): boolean;
+declare function isLegacyEdge(navigator?: any): boolean;
+declare function isSafari(navigator: any): boolean;
+declare function isUnifiedPlanDefault(window: any, navigator: any, PeerConnection: any, RtpTransceiver: any): boolean;
+declare function queryToJson(params: any): any;
+/**
+ * Map a list to an array of arrays, and return the flattened result.
+ * @param {Array<*>|Set<*>|Map<*>} list
+ * @param {function(*): Array<*>} [mapFn]
+ * @returns Array<*>
+ */
+declare function flatMap(list: any, mapFn: any): any;
+declare const Exception: typeof TwilioException;
+export { Exception, average, difference, isElectron, isChrome, isFirefox, isLegacyEdge, isSafari, isUnifiedPlanDefault, queryToJson, flatMap, };

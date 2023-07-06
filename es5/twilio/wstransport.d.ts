@@ -5,7 +5,14 @@
  */
 /// <reference types="node" />
 import { EventEmitter } from 'events';
-import * as WebSocket from 'ws';
+declare const WebSocket: {
+    new (url: string, protocols?: string | string[] | undefined): WebSocket;
+    prototype: WebSocket;
+    readonly CLOSED: number;
+    readonly CLOSING: number;
+    readonly CONNECTING: number;
+    readonly OPEN: number;
+};
 export interface IMessageEvent {
     data: string;
     target: WebSocket;
@@ -227,3 +234,4 @@ export default class WSTransport extends EventEmitter {
      */
     get uri(): string | null;
 }
+export {};

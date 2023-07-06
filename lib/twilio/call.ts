@@ -5,27 +5,29 @@
  * @internal
  */
 import { EventEmitter } from 'events';
+import Backoff from './backoff';
 import Device from './device';
 import DialtonePlayer from './dialtonePlayer';
 import {
   GeneralErrors,
   InvalidArgumentError,
+  InvalidStateError,
   MediaErrors,
   SignalingErrors,
   TwilioError,
   UserMediaErrors,
 } from './errors';
 import Log from './log';
+import { PeerConnection } from './rtc';
 import { IceCandidate, RTCIceCandidate } from './rtc/icecandidate';
 import RTCSample from './rtc/sample';
+import { getPreferredCodecInfo } from './rtc/sdp';
 import RTCWarning from './rtc/warning';
 import StatsMonitor from './statsMonitor';
 import { isChrome } from './util';
+import { generateVoiceEventSid } from './uuid';
 
-const Backoff = require('backoff');
-const C = require('./constants');
-const { PeerConnection } = require('./rtc');
-const { getPreferredCodecInfo } = require('./rtc/sdp');
+import { RELEASE_VERSION } from './constants';
 
 // Placeholders until we convert the respective files to TypeScript.
 /**
@@ -51,9 +53,9 @@ export type ISound = any;
 
 const BACKOFF_CONFIG = {
   factor: 1.1,
-  initialDelay: 1,
-  maxDelay: 30000,
-  randomisationFactor: 0.5,
+  jitter: 0.5,
+  max: 30000,
+  min: 1,
 };
 
 const DTMF_INTER_TONE_GAP: number = 70;
@@ -173,6 +175,11 @@ class Call extends EventEmitter {
   private _isCancelled: boolean = false;
 
   /**
+   * Whether the call has been rejected
+   */
+  private _isRejected: boolean = false;
+
+  /**
    * Whether or not the browser uses unified-plan SDP by default.
    */
   private readonly _isUnifiedPlanDefault: boolean | undefined;
@@ -214,6 +221,12 @@ class Call extends EventEmitter {
   private _mediaStatus: Call.State = Call.State.Pending;
 
   /**
+   * A map of messages sent via sendMessage API using voiceEventSid as the key.
+   * The message will be deleted once an 'ack' or an error is received from the server.
+   */
+  private _messages: Map<string, Call.Message> = new Map();
+
+  /**
    * A batch of metrics samples to send to Insights. Gets cleared after
    * each send and appended to on each new sample.
    */
@@ -236,6 +249,7 @@ class Call extends EventEmitter {
     MediaHandler: PeerConnection,
     offerSdp: null,
     shouldPlayDisconnect: () => true,
+    voiceEventSidGenerator: generateVoiceEventSid,
   };
 
   /**
@@ -279,6 +293,11 @@ class Call extends EventEmitter {
   private _status: Call.State = Call.State.Pending;
 
   /**
+   * Voice event SID generator, creates a unique voice event SID.
+   */
+  private _voiceEventSidGenerator: () => string;
+
+  /**
    * Whether the {@link Call} has been connected. Used to determine if we are reconnected.
    */
   private _wasConnected: boolean = false;
@@ -313,6 +332,9 @@ class Call extends EventEmitter {
       this._signalingReconnectToken = this._options.reconnectToken;
     }
 
+    this._voiceEventSidGenerator =
+      this._options.voiceEventSidGenerator || generateVoiceEventSid;
+
     this._direction = this.parameters.CallSid ? Call.CallDirection.Incoming : Call.CallDirection.Outgoing;
 
     if (this._direction === Call.CallDirection.Incoming && this.parameters) {
@@ -323,7 +345,7 @@ class Call extends EventEmitter {
       this.callerInfo = null;
     }
 
-    this._mediaReconnectBackoff = Backoff.exponential(BACKOFF_CONFIG);
+    this._mediaReconnectBackoff = new Backoff(BACKOFF_CONFIG);
     this._mediaReconnectBackoff.on('ready', () => this._mediaHandler.iceRestart());
 
     // temporary call sid to be used for outgoing calls
@@ -356,6 +378,7 @@ class Call extends EventEmitter {
 
     this._mediaHandler = new (this._options.MediaHandler)
       (config.audioHelper, config.pstream, config.getUserMedia, {
+        RTCPeerConnection: this._options.RTCPeerConnection,
         codecPreferences: this._options.codecPreferences,
         dscp: this._options.dscp,
         forceAggressiveIceNomination: this._options.forceAggressiveIceNomination,
@@ -372,6 +395,11 @@ class Call extends EventEmitter {
       this._latestInputVolume = inputVolume;
       this._latestOutputVolume = outputVolume;
     });
+
+    this._mediaHandler.onaudio = (remoteAudio: typeof Audio) => {
+      this._log.info('Remote audio created');
+      this.emit('audio', remoteAudio);
+    };
 
     this._mediaHandler.onvolume = (inputVolume: number, outputVolume: number,
                                    internalInputVolume: number, internalOutputVolume: number) => {
@@ -498,7 +526,8 @@ class Call extends EventEmitter {
       if (this._options.shouldPlayDisconnect && this._options.shouldPlayDisconnect()
         // Don't play disconnect sound if this was from a cancel event. i.e. the call
         // was ignored or hung up even before it was answered.
-        && !this._isCancelled) {
+        // Similarly, don't play disconnect sound if the call was rejected.
+        && !this._isCancelled && !this._isRejected) {
 
         this._soundcache.get(Device.SoundName.Disconnect).play();
       }
@@ -506,17 +535,20 @@ class Call extends EventEmitter {
       monitor.disable();
       this._publishMetrics();
 
-      if (!this._isCancelled) {
+      if (!this._isCancelled && !this._isRejected) {
         // tslint:disable no-console
         this.emit('disconnect', this);
       }
     };
 
     this._pstream = config.pstream;
+    this._pstream.on('ack', this._onAck);
     this._pstream.on('cancel', this._onCancel);
+    this._pstream.on('error', this._onSignalingError);
     this._pstream.on('ringing', this._onRinging);
     this._pstream.on('transportClose', this._onTransportClose);
     this._pstream.on('connected', this._onConnected);
+    this._pstream.on('message', this._onMessageReceived);
 
     this.on('error', error => {
       this._publisher.error('connection', 'error', {
@@ -610,13 +642,13 @@ class Call extends EventEmitter {
 
       if (this._direction === Call.CallDirection.Incoming) {
         this._isAnswered = true;
-        this._pstream.on('answer', this._onAnswer.bind(this));
+        this._pstream.on('answer', this._onAnswer);
         this._mediaHandler.answerIncomingCall(this.parameters.CallSid, this._options.offerSdp,
           rtcConstraints, rtcConfiguration, onAnswer);
       } else {
         const params = Array.from(this.customParameters.entries()).map(pair =>
          `${encodeURIComponent(pair[0])}=${encodeURIComponent(pair[1])}`).join('&');
-        this._pstream.on('answer', this._onAnswer.bind(this));
+        this._pstream.on('answer', this._onAnswer);
         this._mediaHandler.makeOutgoingCall(this._pstream.token, params, this.outboundConnectionId,
           rtcConstraints, rtcConfiguration, onAnswer);
       }
@@ -764,11 +796,14 @@ class Call extends EventEmitter {
       return;
     }
 
+    this._isRejected = true;
     this._pstream.reject(this.parameters.CallSid);
-    this._status = Call.State.Closed;
-    this.emit('reject');
     this._mediaHandler.reject(this.parameters.CallSid);
     this._publisher.info('connection', 'rejected-by-local', null, this);
+    this._cleanupEventListeners();
+    this._mediaHandler.close();
+    this._status = Call.State.Closed;
+    this.emit('reject');
   }
 
   /**
@@ -780,6 +815,7 @@ class Call extends EventEmitter {
       throw new InvalidArgumentError('Illegal character passed into sendDigits');
     }
 
+    const customSounds = this._options.customSounds || {};
     const sequence: string[] = [];
     digits.split('').forEach((digit: string) => {
       let dtmf = (digit !== 'w') ? `dtmf${digit}` : '';
@@ -788,22 +824,20 @@ class Call extends EventEmitter {
       sequence.push(dtmf);
     });
 
-    // Binds soundCache to be used in recursion until all digits have been played.
-    (function playNextDigit(soundCache, dialtonePlayer) {
-      const digit: string | undefined = sequence.shift();
-
+    const playNextDigit = () => {
+      const digit = sequence.shift() as Device.SoundName | undefined;
       if (digit) {
-        if (dialtonePlayer) {
-          dialtonePlayer.play(digit);
+        if (this._options.dialtonePlayer && !customSounds[digit]) {
+          this._options.dialtonePlayer.play(digit);
         } else {
-          soundCache.get(digit as Device.SoundName).play();
+          this._soundcache.get(digit).play();
         }
       }
-
       if (sequence.length) {
-        setTimeout(playNextDigit.bind(null, soundCache), 200);
+        setTimeout(() => playNextDigit(), 200);
       }
-    })(this._soundcache, this._options.dialtonePlayer);
+    };
+    playNextDigit();
 
     const dtmfSender = this._mediaHandler.getOrCreateDTMFSender();
 
@@ -840,6 +874,52 @@ class Call extends EventEmitter {
       const error = new GeneralErrors.ConnectionError('Could not send DTMF: Signaling channel is disconnected');
       this.emit('error', error);
     }
+  }
+
+  /**
+   * Send a message to Twilio. Your backend application can listen for these
+   * messages to allow communication between your frontend and backend applications.
+   * <br/><br/>This feature is currently in Beta.
+   * @param message - The message object to send.
+   * @returns A voice event sid that uniquely identifies the message that was sent.
+   */
+  sendMessage(message: Call.Message): string {
+    const { content, contentType, messageType } = message;
+
+    if (typeof content === 'undefined' || content === null) {
+      throw new InvalidArgumentError('`content` is empty');
+    }
+
+    if (typeof messageType !== 'string') {
+      throw new InvalidArgumentError(
+        '`messageType` must be an enumeration value of `Call.MessageType` or ' +
+        'a string.',
+      );
+    }
+
+    if (messageType.length === 0) {
+      throw new InvalidArgumentError(
+        '`messageType` must be a non-empty string.',
+      );
+    }
+
+    if (this._pstream === null) {
+      throw new InvalidStateError(
+        'Could not send CallMessage; Signaling channel is disconnected',
+      );
+    }
+
+    const callSid = this.parameters.CallSid;
+    if (typeof this.parameters.CallSid === 'undefined') {
+      throw new InvalidStateError(
+        'Could not send CallMessage; Call has no CallSid',
+      );
+    }
+
+    const voiceEventSid = this._voiceEventSidGenerator();
+    this._messages.set(voiceEventSid, { content, contentType, messageType, voiceEventSid });
+    this._pstream.sendMessage(callSid, content, contentType, messageType, voiceEventSid);
+    return voiceEventSid;
   }
 
   /**
@@ -890,12 +970,15 @@ class Call extends EventEmitter {
     const cleanup = () => {
       if (!this._pstream) { return; }
 
+      this._pstream.removeListener('ack', this._onAck);
       this._pstream.removeListener('answer', this._onAnswer);
       this._pstream.removeListener('cancel', this._onCancel);
+      this._pstream.removeListener('error', this._onSignalingError);
       this._pstream.removeListener('hangup', this._onHangup);
       this._pstream.removeListener('ringing', this._onRinging);
       this._pstream.removeListener('transportClose', this._onTransportClose);
       this._pstream.removeListener('connected', this._onConnected);
+      this._pstream.removeListener('message', this._onMessageReceived);
     };
 
     // This is kind of a hack, but it lets us avoid rewriting more code.
@@ -921,16 +1004,11 @@ class Call extends EventEmitter {
     const payload: Partial<Record<string, string|boolean>> = {
       call_sid: this.parameters.CallSid,
       dscp: !!this._options.dscp,
-      sdk_version: C.RELEASE_VERSION,
-      selected_region: this._options.selectedRegion,
+      sdk_version: RELEASE_VERSION,
     };
 
     if (this._options.gateway) {
       payload.gateway = this._options.gateway;
-    }
-
-    if (this._options.region) {
-      payload.region = this._options.region;
     }
 
     payload.direction = this._direction;
@@ -1026,6 +1104,21 @@ class Call extends EventEmitter {
           this.emit('accept', this);
         }
       }
+    }
+  }
+
+  /**
+   * Called when the {@link Call} receives an ack from signaling
+   * @param payload
+   */
+  private _onAck = (payload: Record<string, any>): void => {
+    const { acktype, callsid, voiceeventsid } = payload;
+    if (this.parameters.CallSid !== callsid) {
+      this._log.warn(`Received ack from a different callsid: ${callsid}`);
+      return;
+    }
+    if (acktype === 'message') {
+      this._onMessageSent(voiceeventsid);
     }
   }
 
@@ -1148,7 +1241,7 @@ class Call extends EventEmitter {
       if (isEndOfIceCycle) {
 
         // We already exceeded max retry time.
-        if (Date.now() - this._mediaReconnectStartTime > BACKOFF_CONFIG.maxDelay) {
+        if (Date.now() - this._mediaReconnectStartTime > BACKOFF_CONFIG.max) {
           this._log.info('Exceeded max ICE retries');
           return this._mediaHandler.onerror(MEDIA_DISCONNECT_ERROR);
         }
@@ -1214,6 +1307,42 @@ class Call extends EventEmitter {
   }
 
   /**
+   * Raised when a Call receives a message from the backend.
+   * @param payload - A record representing the payload of the message from the
+   * Twilio backend.
+   */
+  private _onMessageReceived = (payload: Record<string, any>): void => {
+    const { callsid, content, contenttype, messagetype, voiceeventsid } = payload;
+
+    if (this.parameters.CallSid !== callsid) {
+      this._log.warn(`Received a message from a different callsid: ${callsid}`);
+      return;
+    }
+
+    this.emit('messageReceived', {
+      content,
+      contentType: contenttype,
+      messageType: messagetype,
+      voiceEventSid: voiceeventsid,
+    });
+  }
+
+  /**
+   * Raised when a Call receives an 'ack' with an 'acktype' of 'message.
+   * This means that the message sent via sendMessage API has been received by the signaling server.
+   * @param voiceEventSid
+   */
+  private _onMessageSent = (voiceEventSid: string): void => {
+    if (!this._messages.has(voiceEventSid)) {
+      this._log.warn(`Received a messageSent with a voiceEventSid that doesn't exists: ${voiceEventSid}`);
+      return;
+    }
+    const message = this._messages.get(voiceEventSid);
+    this._messages.delete(voiceEventSid);
+    this.emit('messageSent', message);
+  }
+
+  /**
    * When we get a RINGING signal from PStream, update the {@link Call} status.
    * @param payload
    */
@@ -1252,6 +1381,22 @@ class Call extends EventEmitter {
 
     this.emit('sample', sample);
   }
+
+  /**
+   * Called when an 'error' event is received from the signaling stream.
+   */
+  private _onSignalingError = (payload: Record<string, any>): void => {
+    const { callsid, voiceeventsid } = payload;
+    if (this.parameters.CallSid !== callsid) {
+      this._log.warn(`Received an error from a different callsid: ${callsid}`);
+      return;
+    }
+    if (voiceeventsid && this._messages.has(voiceeventsid)) {
+      // Do not emit an error here. Device is handling all signaling related errors.
+      this._messages.delete(voiceeventsid);
+      this._log.warn(`Received an error while sending a message.`, payload);
+    }
+   }
 
   /**
    * Called when signaling is restored
@@ -1371,6 +1516,14 @@ namespace Call {
   declare function acceptEvent(call: Call): void;
 
   /**
+   * Emitted after the HTMLAudioElement for the remote audio is created.
+   * @param remoteAudio - The HTMLAudioElement.
+   * @example `call.on('audio', handler(remoteAudio))`
+   * @event
+   */
+  declare function audioEvent(remoteAudio: HTMLAudioElement): void;
+
+  /**
    * Emitted when the {@link Call} is canceled.
    * @example `call.on('cancel', () => { })`
    * @event
@@ -1392,6 +1545,24 @@ namespace Call {
    * @event
    */
   declare function errorEvent(error: TwilioError): void;
+
+  /**
+   * Emitted when a Call receives a message from the backend.
+   * <br/><br/>This feature is currently in Beta.
+   * @param message - A message object representing the payload
+   * that was received from the Twilio backend.
+   * @event
+   */
+  declare function messageReceivedEvent(message: Call.Message): void;
+
+  /**
+   * Emitted after calling the {@link Call.sendMessage} API.
+   * This event indicates that Twilio has received the message.
+   * <br/><br/>This feature is currently in Beta.
+   * @param message - A message object that was sent to the Twilio backend.
+   * @event
+   */
+  declare function messageSentEvent(message: Call.Message): void;
 
   /**
    * Emitted when the {@link Call} is muted or unmuted.
@@ -1515,6 +1686,19 @@ namespace Call {
   }
 
   /**
+   * Known call message types.
+   */
+  export enum MessageType {
+    /**
+     * Allows for any object types to be defined by the user.
+     * When this value is used in the {@link Call.Message} object,
+     * The {@link Call.Message.content} can be of any type as long as
+     * it matches the MIME type defined in {@link Call.Message.contentType}.
+     */
+    UserDefinedMessage = 'user-defined-message',
+  }
+
+  /**
    * Options to be used to acquire media tracks and connect media.
    */
   export interface AcceptOptions {
@@ -1584,6 +1768,35 @@ namespace Call {
   }
 
   /**
+   * A Call Message represents the data that is being transferred between
+   * Twilio and the SDK.
+   */
+  export interface Message {
+    /**
+     * The content of the message which should match the contentType parameter.
+     */
+    content: any;
+
+    /**
+     * The MIME type of the content. The default value is application/json
+     * and is the only contentType that is supported at the moment.
+     */
+    contentType?: string;
+
+    /**
+     * The type of message
+     */
+    messageType: MessageType;
+
+    /**
+     * An autogenerated id that uniquely identifies the instance of this message.
+     * This is not required when sending a message from the SDK as this is autogenerated.
+     * But it will be available after the message is sent, or when a message is received.
+     */
+    voiceEventSid?: string;
+  }
+
+  /**
    * Options to be passed to the {@link Call} constructor.
    * @private
    */
@@ -1602,6 +1815,11 @@ namespace Call {
      * An ordered array of codec names, from most to least preferred.
      */
     codecPreferences?: Codec[];
+
+    /**
+     * A mapping of custom sound URLs by sound name.
+     */
+    customSounds?: Partial<Record<Device.SoundName, string>>;
 
     /**
      * A DialTone player, to play mock DTMF sounds.
@@ -1665,11 +1883,6 @@ namespace Call {
     reconnectToken?: string;
 
     /**
-     * The Region currently connected to.
-     */
-    region?: string;
-
-    /**
      * An RTCConfiguration to pass to the RTCPeerConnection constructor.
      */
     rtcConfiguration?: RTCConfiguration;
@@ -1681,9 +1894,9 @@ namespace Call {
     rtcConstraints?: MediaStreamConstraints;
 
     /**
-     * The region passed to {@link Device} on setup.
+     * The RTCPeerConnection passed to {@link Device} on setup.
      */
-    selectedRegion?: string;
+    RTCPeerConnection?: any;
 
     /**
      * Whether the disconnect sound should be played.
@@ -1699,6 +1912,11 @@ namespace Call {
      * TwiML params for the call. May be set for either outgoing or incoming calls.
      */
     twimlParams?: Record<string, any>;
+
+    /**
+     * Voice event SID generator.
+     */
+    voiceEventSidGenerator?: () => string;
   }
 
   /**

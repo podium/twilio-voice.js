@@ -13,6 +13,7 @@ import * as assert from 'assert';
 import { EventEmitter } from 'events';
 import { SinonFakeTimers, SinonSpy, SinonStubbedInstance } from 'sinon';
 import * as sinon from 'sinon';
+import AudioHelper from '../../lib/twilio/audiohelper';
 
 const root = global as any;
 
@@ -26,6 +27,7 @@ describe('Device', function() {
   let clock: SinonFakeTimers;
   let connectOptions: Record<string, any> | undefined;
   let device: Device;
+  let enabledSounds: Record<Device.ToggleableSound, boolean>;
   let pstream: any;
   let publisher: any;
   let stub: SinonStubbedInstance<Device>;
@@ -37,21 +39,32 @@ describe('Device', function() {
 
   const sounds: Partial<Record<Device.SoundName, any>> = { };
 
-  const AudioHelper = (_updateSinkIds: Function, _updateInputStream: Function) => {
+  const AudioHelper = (_updateSinkIds: Function, _updateInputStream: Function, getUserMedia: Function, options?: AudioHelper.Options) => {
+    enabledSounds = options?.enabledSounds || {
+      [Device.SoundName.Disconnect]: true,
+      [Device.SoundName.Incoming]: true,
+      [Device.SoundName.Outgoing]: true,
+    };
     updateInputStream = _updateInputStream;
     updateSinkIds = _updateSinkIds;
-    return audioHelper = createEmitterStub(require('../../lib/twilio/audiohelper').default);
+    const audioHelper = createEmitterStub(require('../../lib/twilio/audiohelper').default);
+    audioHelper._enabledSounds = enabledSounds;
+    audioHelper._getEnabledSounds = () => enabledSounds;
+    audioHelper.disconnect = () => enabledSounds[Device.SoundName.Disconnect];
+    audioHelper.incoming = () => enabledSounds[Device.SoundName.Incoming];
+    audioHelper.outgoing = () => enabledSounds[Device.SoundName.Outgoing];
+    return audioHelper;
   };
   const Call = (_?: any, _connectOptions?: Record<string, any>) => {
     connectOptions = _connectOptions;
     return activeCall = createEmitterStub(require('../../lib/twilio/call').default);
   };
   const PStream = sinon.spy((...args: any[]) =>
-    pstream = createEmitterStub(require('../../lib/twilio/pstream')));
+    pstream = createEmitterStub(require('../../lib/twilio/pstream').default));
   const Publisher = sinon.spy((...args: any[]) =>
-    publisher = createEmitterStub(require('../../lib/twilio/eventpublisher')));
+    publisher = createEmitterStub(require('../../lib/twilio/eventpublisher').default));
   const Sound = (name: Device.SoundName) =>
-    sounds[name] = sinon.createStubInstance(require('../../lib/twilio/sound'));
+    sounds[name] = sinon.createStubInstance(require('../../lib/twilio/sound').default);
   const setupOptions: any = { AudioHelper, Call, PStream, Publisher, Sound };
 
   afterEach(() => {
@@ -227,6 +240,30 @@ describe('Device', function() {
           activeCall.emit('accept');
           sinon.assert.calledOnce(spy.play);
         });
+
+        it('should not play outgoing sound after accepted if disabled', async () => {
+          enabledSounds[Device.SoundName.Outgoing] = false;
+          const spy: any = { play: sinon.spy() };
+          device['_soundcache'].set(Device.SoundName.Outgoing, spy);
+          await device.connect();
+          activeCall._direction = 'OUTGOING';
+          activeCall.emit('accept');
+          sinon.assert.notCalled(spy.play);
+        });
+
+        it('should not play outgoing sound after accepted if disabled after calling updateOptions', async () => {
+          enabledSounds[Device.SoundName.Outgoing] = false;
+          // Force a new audio-helper instance to be recreated
+          // After updating the enabled sounds state
+          device.updateOptions();
+          const spy: any = { play: sinon.spy() };
+          device['_soundcache'].set(Device.SoundName.Outgoing, spy);
+          await device.connect();
+          activeCall._direction = 'OUTGOING';
+          activeCall.emit('accept');
+          // should fail
+          sinon.assert.notCalled(spy.play);
+        });
       });
 
       describe('.destroy()', () => {
@@ -387,6 +424,12 @@ describe('Device', function() {
           assert.equal(device['_options'].appName, 'baz');
         });
 
+        it('should re-initialize publisher with the correct host', () => {
+          pstream.emit('connected', { home: 'foo'});
+          device.updateOptions({ appName: 'bar' });
+          assert.equal(Publisher.args[1][2].host, 'eventgw.foo.twilio.com');
+        });
+
         it('should set up an audio helper', () => {
           const spy = device['_setupAudioHelper'] = sinon.spy(device['_setupAudioHelper']);
           device.updateOptions({});
@@ -489,12 +532,12 @@ describe('Device', function() {
 
         it('should update the preferred uri', () => {
           pstream.emit('connected', { region: 'EU_IRELAND', edge: Edge.Dublin });
-          assert.equal(device['_preferredURI'], ['wss://chunderw-vpc-gll-ie1.twilio.com/signal']);
+          assert.equal(device['_preferredURI'], ['wss://voice-js.dublin.twilio.com/signal']);
         });
 
         it('should update the preferred uri from the first edge', () => {
           pstream.emit('connected', { region: 'EU_IRELAND', edge: [Edge.Dublin, Edge.Frankfurt] });
-          assert.equal(device['_preferredURI'], ['wss://chunderw-vpc-gll-ie1.twilio.com/signal']);
+          assert.equal(device['_preferredURI'], ['wss://voice-js.dublin.twilio.com/signal']);
         });
 
         it('should set the identity', () => {
@@ -664,12 +707,21 @@ describe('Device', function() {
           });
         });
 
-        it('should play the incoming sound', async () => {
+        it('should play the incoming sound if enabled', async () => {
           const spy = { play: sinon.spy() };
           device['_soundcache'].set(Device.SoundName.Incoming, spy);
           pstream.emit('invite', { callsid: 'foo', sdp: 'bar' });
           await clock.tickAsync(0);
           sinon.assert.calledOnce(spy.play);
+        });
+
+        it('should not play the incoming sound if disabled', async () => {
+          enabledSounds[Device.SoundName.Incoming] = false;
+          const spy = { play: sinon.spy() };
+          device['_soundcache'].set(Device.SoundName.Incoming, spy);
+          pstream.emit('invite', { callsid: 'foo', sdp: 'bar' });
+          await clock.tickAsync(0);
+          sinon.assert.notCalled(spy.play);
         });
 
         context('when allowIncomingWhileBusy is true', () => {
@@ -726,7 +778,11 @@ describe('Device', function() {
       });
 
       describe('with a pending incoming call', () => {
+        let spyIncomingSound: any;
         beforeEach(async () => {
+          spyIncomingSound = { play: sinon.spy(), stop: sinon.spy() };
+          device['_soundcache'].set(Device.SoundName.Incoming, spyIncomingSound);
+
           const incomingPromise = new Promise(resolve =>
             device.once(Device.EventName.Incoming, () => {
               device.emit = sinon.spy();
@@ -756,19 +812,29 @@ describe('Device', function() {
           });
 
           it('should not play outgoing sound', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
             const spy: any = { play: sinon.spy() };
             device['_soundcache'].set(Device.SoundName.Outgoing, spy);
             device.calls[0].emit('accept');
             sinon.assert.notCalled(spy.play);
+            sinon.assert.calledOnce(spyIncomingSound.stop);
           });
 
           it('should update the preferred uri', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
             pstream.emit('connected', { edge: 'sydney' });
             const spy: any = device['_stream'].updatePreferredURI =
               sinon.spy(device['_stream'].updatePreferredURI);
             const call = device.calls[0];
             call.emit('accept');
             sinon.assert.calledOnce(spy);
+            sinon.assert.calledOnce(spyIncomingSound.stop);
+          });
+
+          it('should stop playing incoming sound', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
+            device.calls[0].emit("disconnect");
+            sinon.assert.calledOnce(spyIncomingSound.stop);
           });
         });
 
@@ -786,6 +852,23 @@ describe('Device', function() {
             device.calls[0].emit('error');
             sinon.assert.calledOnceWithExactly(spy, null);
           });
+
+          it('should stop playing incoming sound', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
+            device.calls[0].status = () => CallType.State.Closed;
+            device.calls[0].emit('error');
+            sinon.assert.calledOnce(spyIncomingSound.stop);
+          });
+
+          it('should not unset the preferred uri if stream is null', () => {
+            const spy: any = device['_stream'].updatePreferredURI =
+              sinon.spy(device['_stream'].updatePreferredURI);
+
+            device['_stream'] = null;
+            device.calls[0].status = () => CallType.State.Closed;
+            device.calls[0].emit('error');
+            sinon.assert.notCalled(spy);
+          });
         });
 
         describe('on call.transportClose', () => {
@@ -798,6 +881,12 @@ describe('Device', function() {
             device.calls[0].status = () => CallType.State.Open;
             device.calls[0].emit('transportClose');
             assert.equal(device.calls.length, 1);
+          });
+          it('should stop playing incoming sound', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
+            device.calls[0].status = () => CallType.State.Pending;
+            device.calls[0].emit('transportClose');
+            sinon.assert.calledOnce(spyIncomingSound.stop);
           });
         });
 
@@ -818,6 +907,12 @@ describe('Device', function() {
             device.calls[0].emit('disconnect');
             sinon.assert.calledOnceWithExactly(spy, null);
           });
+
+          it('should stop playing incoming sound', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
+            device.calls[0].emit('disconnect');
+            sinon.assert.calledOnce(spyIncomingSound.stop);
+          });
         });
 
         describe('on call.reject', () => {
@@ -831,6 +926,12 @@ describe('Device', function() {
               sinon.spy(device['_stream'].updatePreferredURI);
             device.calls[0].emit('reject');
             sinon.assert.calledOnceWithExactly(spy, null);
+          });
+
+          it('should stop playing incoming sound', () => {
+            sinon.assert.calledOnce(spyIncomingSound.play);
+            device.calls[0].emit('reject');
+            sinon.assert.calledOnce(spyIncomingSound.stop);
           });
         });
       });
@@ -958,7 +1059,7 @@ describe('Device', function() {
               });
 
               it('should publish a speaker-devices-set event', () => {
-                sinon.assert.calledOnce(publisher.info);
+                sinon.assert.calledTwice(publisher.info);
                 sinon.assert.calledWith(publisher.info, 'audio', 'speaker-devices-set',
                   { audio_device_ids: sinkIds });
               });
@@ -1001,7 +1102,7 @@ describe('Device', function() {
               });
 
               it('should publish a ringtone-devices-set event', () => {
-                sinon.assert.calledOnce(publisher.info);
+                sinon.assert.calledTwice(publisher.info);
                 sinon.assert.calledWith(publisher.info, 'audio', 'ringtone-devices-set',
                   { audio_device_ids: sinkIds });
               });
@@ -1135,7 +1236,7 @@ describe('Device', function() {
         sinon.assert.calledOnceWithExactly(
           PStream,
           token,
-          ['wss://chunderw-vpc-gll.twilio.com/signal'],
+          ['wss://voice-js.roaming.twilio.com/signal'],
           {
             backoffMaxMs: undefined,
             maxPreferredDurationMs: 0,
@@ -1148,7 +1249,7 @@ describe('Device', function() {
         sinon.assert.calledOnceWithExactly(
           PStream,
           token,
-          ['wss://chunderw-vpc-gll-sg1.twilio.com/signal'],
+          ['wss://voice-js.singapore.twilio.com/signal'],
           {
             backoffMaxMs: undefined,
             maxPreferredDurationMs: 0,
@@ -1162,8 +1263,8 @@ describe('Device', function() {
           PStream,
           token,
           [
-            'wss://chunderw-vpc-gll-sg1.twilio.com/signal',
-            'wss://chunderw-vpc-gll-au1.twilio.com/signal',
+            'wss://voice-js.singapore.twilio.com/signal',
+            'wss://voice-js.sydney.twilio.com/signal',
           ],
           {
             backoffMaxMs: undefined,
@@ -1177,7 +1278,7 @@ describe('Device', function() {
         sinon.assert.calledOnceWithExactly(
           PStream,
           token,
-          ['wss://chunderw-vpc-gll.twilio.com/signal'],
+          ['wss://voice-js.roaming.twilio.com/signal'],
           {
             backoffMaxMs: undefined,
             maxPreferredDurationMs: 5,

@@ -1,9 +1,16 @@
+"use strict";
+/**
+ * @packageDocumentation
+ * @module Voice
+ * @internalapi
+ */
+// @ts-nocheck
+Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * This file was imported from another project. If making changes to this file, please don't
  * make them here. Make them on the linked repo below, then copy back:
  * https://code.hq.twilio.com/client/MockRTCStatsReport
  */
-/* eslint-disable no-undefined */
 // The legacy max volume, which is the positive half of a signed short integer.
 var OLD_MAX_VOLUME = 32767;
 var NativeRTCStatsReport = typeof window !== 'undefined'
@@ -22,13 +29,13 @@ function MockRTCStatsReport(statsMap) {
     }
     var self = this;
     Object.defineProperties(this, {
+        _map: { value: statsMap },
         size: {
             enumerable: true,
             get: function () {
                 return self._map.size;
-            }
+            },
         },
-        _map: { value: statsMap }
     });
     this[Symbol.iterator] = statsMap[Symbol.iterator];
 }
@@ -121,16 +128,16 @@ MockRTCStatsReport.fromRTCStatsResponse = function fromRTCStatsResponse(statsRes
  */
 function createRTCTransportStats(report) {
     return {
-        type: 'transport',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        bytesSent: undefined,
         bytesReceived: undefined,
-        rtcpTransportStatsId: undefined,
+        bytesSent: undefined,
         dtlsState: undefined,
-        selectedCandidatePairId: report.stat('selectedCandidatePairId'),
+        id: report.id,
         localCertificateId: report.stat('localCertificateId'),
-        remoteCertificateId: report.stat('remoteCertificateId')
+        remoteCertificateId: report.stat('remoteCertificateId'),
+        rtcpTransportStatsId: undefined,
+        selectedCandidatePairId: report.stat('selectedCandidatePairId'),
+        timestamp: Date.parse(report.timestamp),
+        type: 'transport',
     };
 }
 /**
@@ -139,15 +146,15 @@ function createRTCTransportStats(report) {
  */
 function createRTCCodecStats(report) {
     return {
-        type: 'codec',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        payloadType: undefined,
-        mimeType: report.stat('mediaType') + "/" + report.stat('googCodecName'),
-        clockRate: undefined,
         channels: undefined,
+        clockRate: undefined,
+        id: report.id,
+        implementation: undefined,
+        mimeType: report.stat('mediaType') + "/" + report.stat('googCodecName'),
+        payloadType: undefined,
         sdpFmtpLine: undefined,
-        implementation: undefined
+        timestamp: Date.parse(report.timestamp),
+        type: 'codec',
     };
 }
 /**
@@ -156,34 +163,34 @@ function createRTCCodecStats(report) {
  */
 function createRTCMediaStreamTrackStats(report) {
     return {
-        type: 'track',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        trackIdentifier: report.stat('googTrackId'),
-        remoteSource: undefined,
-        ended: undefined,
-        kind: report.stat('mediaType'),
-        detached: undefined,
-        ssrcIds: undefined,
-        frameWidth: isPresent(report, 'googFrameWidthReceived')
-            ? getInt(report, 'googFrameWidthReceived')
-            : getInt(report, 'googFrameWidthSent'),
-        frameHeight: isPresent(report, 'googFrameHeightReceived')
-            ? getInt(report, 'googFrameHeightReceived')
-            : getInt(report, 'googFrameHeightSent'),
-        framesPerSecond: undefined,
-        framesSent: getInt(report, 'framesEncoded'),
-        framesReceived: undefined,
-        framesDecoded: getInt(report, 'framesDecoded'),
-        framesDropped: undefined,
-        framesCorrupted: undefined,
-        partialFramesLost: undefined,
-        fullFramesLost: undefined,
         audioLevel: isPresent(report, 'audioOutputLevel')
             ? getInt(report, 'audioOutputLevel') / OLD_MAX_VOLUME
             : (getInt(report, 'audioInputLevel') || 0) / OLD_MAX_VOLUME,
+        detached: undefined,
         echoReturnLoss: getFloat(report, 'googEchoCancellationReturnLoss'),
-        echoReturnLossEnhancement: getFloat(report, 'googEchoCancellationReturnLossEnhancement')
+        echoReturnLossEnhancement: getFloat(report, 'googEchoCancellationReturnLossEnhancement'),
+        ended: undefined,
+        frameHeight: isPresent(report, 'googFrameHeightReceived')
+            ? getInt(report, 'googFrameHeightReceived')
+            : getInt(report, 'googFrameHeightSent'),
+        frameWidth: isPresent(report, 'googFrameWidthReceived')
+            ? getInt(report, 'googFrameWidthReceived')
+            : getInt(report, 'googFrameWidthSent'),
+        framesCorrupted: undefined,
+        framesDecoded: getInt(report, 'framesDecoded'),
+        framesDropped: undefined,
+        framesPerSecond: undefined,
+        framesReceived: undefined,
+        framesSent: getInt(report, 'framesEncoded'),
+        fullFramesLost: undefined,
+        id: report.id,
+        kind: report.stat('mediaType'),
+        partialFramesLost: undefined,
+        remoteSource: undefined,
+        ssrcIds: undefined,
+        timestamp: Date.parse(report.timestamp),
+        trackIdentifier: report.stat('googTrackId'),
+        type: 'track',
     };
 }
 /**
@@ -193,26 +200,26 @@ function createRTCMediaStreamTrackStats(report) {
  */
 function createRTCRTPStreamStats(report, isInbound) {
     return {
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        ssrc: report.stat('ssrc'),
         associateStatsId: undefined,
-        isRemote: undefined,
-        mediaType: report.stat('mediaType'),
-        trackId: "track-" + report.id,
-        transportId: report.stat('transportId'),
         codecId: "codec-" + report.id,
         firCount: isInbound
             ? getInt(report, 'googFirsSent')
             : undefined,
-        pliCount: isInbound
-            ? getInt(report, 'googPlisSent')
-            : getInt(report, 'googPlisReceived'),
+        id: report.id,
+        isRemote: undefined,
+        mediaType: report.stat('mediaType'),
         nackCount: isInbound
             ? getInt(report, 'googNacksSent')
             : getInt(report, 'googNacksReceived'),
+        pliCount: isInbound
+            ? getInt(report, 'googPlisSent')
+            : getInt(report, 'googPlisReceived'),
+        qpSum: getInt(report, 'qpSum'),
         sliCount: undefined,
-        qpSum: getInt(report, 'qpSum')
+        ssrc: report.stat('ssrc'),
+        timestamp: Date.parse(report.timestamp),
+        trackId: "track-" + report.id,
+        transportId: report.stat('transportId'),
     };
 }
 /**
@@ -222,24 +229,24 @@ function createRTCRTPStreamStats(report, isInbound) {
 function createRTCInboundRTPStreamStats(report) {
     var rtp = createRTCRTPStreamStats(report, true);
     Object.assign(rtp, {
-        type: 'inbound-rtp',
-        packetsReceived: getInt(report, 'packetsReceived'),
-        bytesReceived: getInt(report, 'bytesReceived'),
-        packetsLost: getInt(report, 'packetsLost'),
-        jitter: convertMsToSeconds(report.stat('googJitterReceived')),
-        fractionLost: undefined,
-        roundTripTime: convertMsToSeconds(report.stat('googRtt')),
-        packetsDiscarded: undefined,
-        packetsRepaired: undefined,
-        burstPacketsLost: undefined,
-        burstPacketsDiscarded: undefined,
-        burstLossCount: undefined,
         burstDiscardCount: undefined,
-        burstLossRate: undefined,
         burstDiscardRate: undefined,
-        gapLossRate: undefined,
+        burstLossCount: undefined,
+        burstLossRate: undefined,
+        burstPacketsDiscarded: undefined,
+        burstPacketsLost: undefined,
+        bytesReceived: getInt(report, 'bytesReceived'),
+        fractionLost: undefined,
+        framesDecoded: getInt(report, 'framesDecoded'),
         gapDiscardRate: undefined,
-        framesDecoded: getInt(report, 'framesDecoded')
+        gapLossRate: undefined,
+        jitter: convertMsToSeconds(report.stat('googJitterReceived')),
+        packetsDiscarded: undefined,
+        packetsLost: getInt(report, 'packetsLost'),
+        packetsReceived: getInt(report, 'packetsReceived'),
+        packetsRepaired: undefined,
+        roundTripTime: convertMsToSeconds(report.stat('googRtt')),
+        type: 'inbound-rtp',
     });
     return rtp;
 }
@@ -250,12 +257,12 @@ function createRTCInboundRTPStreamStats(report) {
 function createRTCOutboundRTPStreamStats(report) {
     var rtp = createRTCRTPStreamStats(report, false);
     Object.assign(rtp, {
-        type: 'outbound-rtp',
-        remoteTimestamp: undefined,
-        packetsSent: getInt(report, 'packetsSent'),
         bytesSent: getInt(report, 'bytesSent'),
+        framesEncoded: getInt(report, 'framesEncoded'),
+        packetsSent: getInt(report, 'packetsSent'),
+        remoteTimestamp: undefined,
         targetBitrate: undefined,
-        framesEncoded: getInt(report, 'framesEncoded')
+        type: 'outbound-rtp',
     });
     return rtp;
 }
@@ -266,21 +273,21 @@ function createRTCOutboundRTPStreamStats(report) {
  */
 function createRTCIceCandidateStats(report, isRemote) {
     return {
+        candidateType: translateCandidateType(report.stat('candidateType')),
+        deleted: undefined,
+        id: report.id,
+        ip: report.stat('ipAddress'),
+        isRemote: isRemote,
+        port: getInt(report, 'portNumber'),
+        priority: getFloat(report, 'priority'),
+        protocol: report.stat('transport'),
+        relayProtocol: undefined,
+        timestamp: Date.parse(report.timestamp),
+        transportId: undefined,
         type: isRemote
             ? 'remote-candidate'
             : 'local-candidate',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        transportId: undefined,
-        isRemote: isRemote,
-        ip: report.stat('ipAddress'),
-        port: getInt(report, 'portNumber'),
-        protocol: report.stat('transport'),
-        candidateType: translateCandidateType(report.stat('candidateType')),
-        priority: getFloat(report, 'priority'),
         url: undefined,
-        relayProtocol: undefined,
-        deleted: undefined
     };
 }
 /**
@@ -289,32 +296,32 @@ function createRTCIceCandidateStats(report, isRemote) {
  */
 function createRTCIceCandidatePairStats(report) {
     return {
-        type: 'candidate-pair',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        transportId: report.stat('googChannelId'),
-        localCandidateId: report.stat('localCandidateId'),
-        remoteCandidateId: report.stat('remoteCandidateId'),
-        state: undefined,
-        priority: undefined,
-        nominated: undefined,
-        writable: getBoolean(report, 'googWritable'),
-        readable: undefined,
-        bytesSent: getInt(report, 'bytesSent'),
-        bytesReceived: getInt(report, 'bytesReceived'),
-        lastPacketSentTimestamp: undefined,
-        lastPacketReceivedTimestamp: undefined,
-        totalRoundTripTime: undefined,
-        currentRoundTripTime: convertMsToSeconds(report.stat('googRtt')),
-        availableOutgoingBitrate: undefined,
         availableIncomingBitrate: undefined,
+        availableOutgoingBitrate: undefined,
+        bytesReceived: getInt(report, 'bytesReceived'),
+        bytesSent: getInt(report, 'bytesSent'),
+        consentRequestsSent: getInt(report, 'consentRequestsSent'),
+        currentRoundTripTime: convertMsToSeconds(report.stat('googRtt')),
+        id: report.id,
+        lastPacketReceivedTimestamp: undefined,
+        lastPacketSentTimestamp: undefined,
+        localCandidateId: report.stat('localCandidateId'),
+        nominated: undefined,
+        priority: undefined,
+        readable: undefined,
+        remoteCandidateId: report.stat('remoteCandidateId'),
         requestsReceived: getInt(report, 'requestsReceived'),
         requestsSent: getInt(report, 'requestsSent'),
         responsesReceived: getInt(report, 'responsesReceived'),
         responsesSent: getInt(report, 'responsesSent'),
         retransmissionsReceived: undefined,
         retransmissionsSent: undefined,
-        consentRequestsSent: getInt(report, 'consentRequestsSent')
+        state: undefined,
+        timestamp: Date.parse(report.timestamp),
+        totalRoundTripTime: undefined,
+        transportId: report.stat('googChannelId'),
+        type: 'candidate-pair',
+        writable: getBoolean(report, 'googWritable'),
     };
 }
 /**
@@ -323,13 +330,13 @@ function createRTCIceCandidatePairStats(report) {
  */
 function createRTCCertificateStats(report) {
     return {
-        type: 'certificate',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
+        base64Certificate: report.stat('googDerBase64'),
         fingerprint: report.stat('googFingerprint'),
         fingerprintAlgorithm: report.stat('googFingerprintAlgorithm'),
-        base64Certificate: report.stat('googDerBase64'),
-        issuerCertificateId: report.stat('googIssuerId')
+        id: report.id,
+        issuerCertificateId: report.stat('googIssuerId'),
+        timestamp: Date.parse(report.timestamp),
+        type: 'certificate',
     };
 }
 /**
@@ -338,18 +345,18 @@ function createRTCCertificateStats(report) {
  */
 function createRTCDataChannelStats(report) {
     return {
-        type: 'data-channel',
-        id: report.id,
-        timestamp: Date.parse(report.timestamp),
-        label: report.stat('label'),
-        protocol: report.stat('protocol'),
-        datachannelid: report.stat('datachannelid'),
-        transportId: report.stat('transportId'),
-        state: report.stat('state'),
-        messagesSent: undefined,
+        bytesReceived: undefined,
         bytesSent: undefined,
+        datachannelid: report.stat('datachannelid'),
+        id: report.id,
+        label: report.stat('label'),
         messagesReceived: undefined,
-        bytesReceived: undefined
+        messagesSent: undefined,
+        protocol: report.stat('protocol'),
+        state: report.stat('state'),
+        timestamp: Date.parse(report.timestamp),
+        transportId: report.stat('transportId'),
+        type: 'data-channel',
     };
 }
 /**
@@ -399,5 +406,5 @@ function isPresent(report, statName) {
     var stat = report.stat(statName);
     return typeof stat !== 'undefined' && stat !== '';
 }
-module.exports = MockRTCStatsReport;
-//# sourceMappingURL=mockrtcstatsreport.js.map
+exports.default = MockRTCStatsReport;
+//# sourceMappingURL=data:application/json;base64,eyJ2ZXJzaW9uIjozLCJmaWxlIjoibW9ja3J0Y3N0YXRzcmVwb3J0LmpzIiwic291cmNlUm9vdCI6IiIsInNvdXJjZXMiOlsiLi4vLi4vLi4vbGliL3R3aWxpby9ydGMvbW9ja3J0Y3N0YXRzcmVwb3J0LnRzIl0sIm5hbWVzIjpbXSwibWFwcGluZ3MiOiI7QUFBQTs7OztHQUlHO0FBQ0gsY0FBYzs7QUFFZDs7OztHQUlHO0FBRUgsK0VBQStFO0FBQy9FLElBQU0sY0FBYyxHQUFHLEtBQUssQ0FBQztBQUU3QixJQUFNLG9CQUFvQixHQUFHLE9BQU8sTUFBTSxLQUFLLFdBQVc7SUFDeEQsQ0FBQyxDQUFDLE1BQU0sQ0FBQyxjQUFjLENBQUMsQ0FBQyxDQUFDLFNBQVMsQ0FBQztBQUV0Qzs7Ozs7OztHQU9HO0FBQ0gsU0FBUyxrQkFBa0IsQ0FBQyxRQUFRO0lBQ2xDLElBQUksQ0FBQyxDQUFDLElBQUksWUFBWSxrQkFBa0IsQ0FBQyxFQUFFO1FBQ3pDLE9BQU8sSUFBSSxrQkFBa0IsQ0FBQyxRQUFRLENBQUMsQ0FBQztLQUN6QztJQUVELElBQU0sSUFBSSxHQUFHLElBQUksQ0FBQztJQUNsQixNQUFNLENBQUMsZ0JBQWdCLENBQUMsSUFBSSxFQUFFO1FBQzVCLElBQUksRUFBRSxFQUFFLEtBQUssRUFBRSxRQUFRLEVBQUU7UUFDekIsSUFBSSxFQUFFO1lBQ0osVUFBVSxFQUFFLElBQUk7WUFDaEIsR0FBRztnQkFDRCxPQUFPLElBQUksQ0FBQyxJQUFJLENBQUMsSUFBSSxDQUFDO1lBQ3hCLENBQUM7U0FDRjtLQUNGLENBQUMsQ0FBQztJQUVILElBQUksQ0FBQyxNQUFNLENBQUMsUUFBUSxDQUFDLEdBQUcsUUFBUSxDQUFDLE1BQU0sQ0FBQyxRQUFRLENBQUMsQ0FBQztBQUNwRCxDQUFDO0FBRUQsNkVBQTZFO0FBQzdFLElBQUksb0JBQW9CLEVBQUU7SUFDeEIsa0JBQWtCLENBQUMsU0FBUyxHQUFHLE1BQU0sQ0FBQyxNQUFNLENBQUMsb0JBQW9CLENBQUMsU0FBUyxDQUFDLENBQUM7SUFDN0Usa0JBQWtC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

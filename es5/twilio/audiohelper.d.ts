@@ -65,6 +65,14 @@ declare class AudioHelper extends EventEmitter {
      */
     private _audioContext?;
     /**
+     * Whether each sound is enabled.
+     */
+    private _enabledSounds;
+    /**
+     * The enumerateDevices method to use
+     */
+    private _enumerateDevices;
+    /**
      * The `getUserMedia()` function to use.
      */
     private _getUserMedia;
@@ -114,6 +122,11 @@ declare class AudioHelper extends EventEmitter {
      */
     constructor(onActiveOutputsChanged: (type: 'ringtone' | 'speaker', outputIds: string[]) => Promise<void>, onActiveInputChanged: (stream: MediaStream | null) => Promise<void>, getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>, options?: AudioHelper.Options);
     /**
+     * Current state of the enabled sounds
+     * @private
+     */
+    _getEnabledSounds(): Record<Device.ToggleableSound, boolean>;
+    /**
      * Start polling volume if it's supported and there's an input stream to poll.
      * @private
      */
@@ -128,6 +141,27 @@ declare class AudioHelper extends EventEmitter {
      * @private
      */
     _unbind(): void;
+    /**
+     * Enable or disable the disconnect sound.
+     * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
+     * Not passing this parameter will not alter the enable-status of the sound.
+     * @returns The enable-status of the sound.
+     */
+    disconnect(doEnable?: boolean): boolean;
+    /**
+     * Enable or disable the incoming sound.
+     * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
+     * Not passing this parameter will not alter the enable-status of the sound.
+     * @returns The enable-status of the sound.
+     */
+    incoming(doEnable?: boolean): boolean;
+    /**
+     * Enable or disable the outgoing sound.
+     * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
+     * Not passing this parameter will not alter the enable-status of the sound.
+     * @returns The enable-status of the sound.
+     */
+    outgoing(doEnable?: boolean): boolean;
     /**
      * Set the MediaTrackConstraints to be applied on every getUserMedia call for new input
      * device audio. Any deviceId specified here will be ignored. Instead, device IDs should
@@ -154,14 +188,6 @@ declare class AudioHelper extends EventEmitter {
      */
     unsetInputDevice(): Promise<void>;
     /**
-     * Merge the passed enabledSounds into {@link AudioHelper}. Currently used to merge the deprecated
-     *   Device.sounds object onto the new {@link AudioHelper} interface. Mutates
-     *   by reference, sharing state between {@link Device} and {@link AudioHelper}.
-     * @param enabledSounds - The initial sound settings to merge.
-     * @private
-     */
-    private _addEnabledSounds;
-    /**
      * Get the index of an un-labeled Device.
      * @param mediaDeviceInfo
      * @returns The index of the passed MediaDeviceInfo
@@ -171,6 +197,13 @@ declare class AudioHelper extends EventEmitter {
      * Initialize output device enumeration.
      */
     private _initializeEnumeration;
+    /**
+     * Set whether the sound is enabled or not
+     * @param soundName
+     * @param doEnable
+     * @returns Whether the sound is enabled or not
+     */
+    private _maybeEnableSound;
     /**
      * Remove an input device from inputs
      * @param lostDevice
@@ -245,11 +278,13 @@ declare namespace AudioHelper {
          */
         audioContext?: AudioContext;
         /**
-         * A Record of sounds. This is modified by reference, and is used to
-         * maintain backward-compatibility. This should be removed or refactored in 2.0.
-         * TODO: Remove / refactor in 2.0. (CLIENT-5302)
+         * Whether each sound is enabled.
          */
         enabledSounds?: Record<Device.ToggleableSound, boolean>;
+        /**
+         * Overrides the native MediaDevices.enumerateDevices API.
+         */
+        enumerateDevices?: any;
         /**
          * A custom MediaDevices instance to use.
          */
