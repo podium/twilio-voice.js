@@ -5,7 +5,7 @@ import { generateAccessToken } from '../lib/token';
 
 // (rrowland) The TwiML expected by these tests can be found in the README.md
 
-describe('Device', function() {
+describe('Device', function () {
   this.timeout(10000);
 
   let device1: Device;
@@ -98,7 +98,9 @@ describe('Device', function() {
 
       const [expireTime, registeringTime] = await eventPromises;
       const diff = Math.abs(expireTime - registeringTime);
-      assert(diff < 500, `event time occurred too late; diff: ${diff}`);
+      // ttl returned from signaling, which we use to calculate the timeout,
+      // sometimes returns 1s less from the original ttl we provided. So let's account for that.
+      assert(diff < 2000, `event time occurred too late; diff: ${diff}`);
     });
   });
 
@@ -212,11 +214,13 @@ describe('Device', function() {
 
       it('should post metrics', (done) => {
         const publisher = call1['_publisher'];
-        (publisher as any)['_request'] = { post: (params: any, err: Function) => {
-          if (/EndpointMetrics$/.test(params.url)) {
-            done();
+        (publisher as any)['_request'] = {
+          post: (params: any, err: Function) => {
+            if (/EndpointMetrics$/.test(params.url)) {
+              done();
+            }
           }
-        }};
+        };
       });
 
       it('should hang up', (done) => {

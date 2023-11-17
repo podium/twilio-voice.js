@@ -1,5 +1,121 @@
-2.6.1 (In Progress)
-===================
+:warning: **Important**: If you are upgrading to version 2.3.0 or later and have firewall rules or network configuration that blocks any unknown traffic by default, you need to update your configuration to allow connections to the new DNS names and IP addresses. Please refer to this [changelog](#230-january-23-2023) for more details.
+
+2.8.0 (October 16, 2023)
+=======================
+
+New Features
+------------
+
+- Added a new feature flag `enableImprovedSignalingErrorPrecision` to enhance the precision of errors emitted by `Device` and `Call` objects.
+
+  ```ts
+  const token = ...;
+  const device = new Device(token, {
+    enableImprovedSignalingErrorPrecision: true,
+  });
+  ```
+
+  The default value of this option is `false`.
+
+  When this flag is enabled, some errors that would have been described with a generic error code are now described with a more precise error code. With this feature, the following errors now have their own error codes. Please see this [page](https://www.twilio.com/docs/api/errors) for more details about each error.
+
+  - Device Error Changes
+
+    ```ts
+    const device = new Device(token, {
+      enableImprovedSignalingErrorPrecision: true,
+    });
+    device.on('error', (deviceError) => {
+      // the following table describes how deviceError will change with this feature flag
+    });
+    ```
+
+    | Device Error Name | Device Error Code with Feature Flag Enabled | Device Error Code with Feature Flag Disabled |
+    | --- | --- | --- |
+    | `GeneralErrors.ApplicationNotFoundError` | `31001` | `53000` |
+    | `GeneralErrors.ConnectionDeclinedError` | `31002` | `53000` |
+    | `GeneralErrors.ConnectionTimeoutError` | `31003` | `53000` |
+    | `MalformedRequestErrors.MissingParameterArrayError` | `31101` | `53000` |
+    | `MalformedRequestErrors.AuthorizationTokenMissingError` | `31102` | `53000` |
+    | `MalformedRequestErrors.MaxParameterLengthExceededError` | `31103` | `53000` |
+    | `MalformedRequestErrors.InvalidBridgeTokenError` | `31104` | `53000` |
+    | `MalformedRequestErrors.InvalidClientNameError` | `31105` | `53000` |
+    | `MalformedRequestErrors.ReconnectParameterInvalidError` | `31107` | `53000` |
+    | `SignatureValidationErrors.AccessTokenSignatureValidationFailed` | `31202` | `53000` |
+    | `AuthorizationErrors.NoValidAccountError` | `31203` | `53000` |
+    | `AuthorizationErrors.JWTTokenExpirationTooLongError` | `31207` | `53000` |
+    | `ClientErrors.NotFound` | `31404` | `53000` |
+    | `ClientErrors.TemporarilyUnavilable` | `31480` | `53000` |
+    | `ClientErrors.BusyHere` | `31486` | `53000` |
+    | `SIPServerErrors.Decline` | `31603` | `53000` |
+
+  - Call Error Changes
+
+    ```ts
+    const device = new Device(token, {
+      enableImprovedSignalingErrorPrecision: true,
+    });
+    const call = device.connect(...);
+    call.on('error', (callError) => {
+      // the following table describes how callError will change with this feature flag
+    });
+    ```
+
+    | Call Error Name | Call Error Code with Feature Flag Enabled | Call Error Code with Feature Flag Disabled |
+    | --- | --- | --- |
+    | `GeneralErrors.ConnectionDeclinedError` | `31002` | `31005` |
+    | `AuthorizationErrors.InvalidJWTTokenError` | `31204` | `31005` |
+    | `AuthorizationErrors.JWTTokenExpiredError` | `31205` | `31005` |
+
+  _**IMPORTANT:** If your application logic currently relies on listening to the generic error code `53000` or `31005`, and you opt into enabling the feature flag, then your applicaton logic needs to be updated to anticipate the new error code when any of the above errors happen._
+
+2.7.3 (October 6, 2023)
+======================
+
+Bug Fixes
+---------
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/163) where, sometimes a TypeError is raised while handling an incoming call under the following circumstances:
+  - Network interruptions
+  - updating the token before accepting the call
+
+2.7.2 (September 21, 2023)
+=========================
+
+Changes
+-------
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/197) where audio in the Chrome browser is choppy when another application is also using the audio devices.
+- Added missing documentation for the following events:
+  - `call.on('ringing', handler)`
+  - `call.on('warning', handler)`
+  - `call.on('warning-cleared', handler)`
+  - `device.on('destroyed', handler)`
+
+2.7.1 (August 3, 2023)
+======================
+
+Bug Fixes
+---------
+
+- Fixed an issue where `call.sendMessage()` API throws an error if the SDK is imported as an [ECMAScript Module (ESM)](https://nodejs.org/api/esm.html) using the `@twilio/voice-sdk/esm` path.
+
+2.7.0 (August 1, 2023)
+======================
+
+ECMAScript Module Support
+-------------------------
+
+Currently, the SDK is imported as a [CommonJS Module (CJS)](https://nodejs.org/api/modules.html) using the root path `@twilio/voice-sdk`. With this release, the SDK contains an **experimental feature** that allows it to be imported as an [ECMAScript Module (ESM)](https://nodejs.org/api/esm.html) using the `@twilio/voice-sdk/esm` path. As this is an experimental feature, some frameworks using bundlers like `Vite` and `Rollup` may not work. Full support for ESM will be available in a future release and will become the default import behavior of the SDK.
+
+Example:
+
+```ts
+import { Device } from '@twilio/voice-sdk/esm';
+```
+
+2.6.1 (July 7, 2023)
+====================
 
 Changes
 -------
@@ -166,7 +282,11 @@ Bug Fixes
 - Use DOMException instead of DOMError, which has been deprecated
 - Removed npm util from the package, instead favoring native functions
 
+<<<<<<< HEAD
 2.1.0 (December 16, 2021)
+=======
+2.1.0 (January 6, 2022)
+>>>>>>> 55a956dc49644ec896d53a522e926513daf985c7
 =========================
 
 New Features
