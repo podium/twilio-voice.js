@@ -14,8 +14,7 @@ import {
   AuthorizationErrors,
   ClientErrors,
   GeneralErrors,
-  getErrorByCode,
-  hasErrorByCode,
+  getPreciseSignalingErrorByCode,
   InvalidArgumentError,
   InvalidStateError,
   NotSupportedError,
@@ -339,11 +338,12 @@ class Device extends EventEmitter {
     closeProtection: false,
     codecPreferences: [Call.Codec.PCMU, Call.Codec.Opus],
     dscp: true,
+    enableImprovedSignalingErrorPrecision: false,
     forceAggressiveIceNomination: false,
     logLevel: LogLevels.ERROR,
     maxCallSignalingTimeoutMs: 0,
     preflight: false,
-    sounds: { },
+    sounds: {},
     tokenRefreshMs: 10000,
     voiceEventSidGenerator: generateVoiceEventSid,
   };
@@ -382,7 +382,7 @@ class Device extends EventEmitter {
   /**
    * The options passed to {@link Device} constructor or {@link Device.updateOptions}.
    */
-  private _options: IExtendedDeviceOptions = { };
+  private _options: IExtendedDeviceOptions = {};
 
   /**
    * The preferred URI to (re)-connect signaling to.
@@ -458,7 +458,7 @@ class Device extends EventEmitter {
    * @constructor
    * @param options
    */
-  constructor(token: string, options: Device.Options = { }) {
+  constructor(token: string, options: Device.Options = {}) {
     super();
 
     this.updateToken(token);
@@ -521,8 +521,8 @@ class Device extends EventEmitter {
       Device._isUnifiedPlanDefault = typeof window !== 'undefined'
         && typeof RTCPeerConnection !== 'undefined'
         && typeof RTCRtpTransceiver !== 'undefined'
-      ? isUnifiedPlanDefault(window, window.navigator, RTCPeerConnection, RTCRtpTransceiver)
-      : false;
+        ? isUnifiedPlanDefault(window, window.navigator, RTCPeerConnection, RTCRtpTransceiver)
+        : false;
     }
 
     this._boundDestroy = this.destroy.bind(this);
@@ -547,17 +547,22 @@ class Device extends EventEmitter {
    * Make an outgoing Call.
    * @param options
    */
-  async connect(options: Device.ConnectOptions = { }): Promise<Call> {
+  async connect(options: Device.ConnectOptions = {}): Promise<Call> {
     this._throwIfDestroyed();
 
     if (this._activeCall) {
       throw new InvalidStateError('A Call is already active');
     }
 
-    const activeCall = this._activeCall = await this._makeCall(options.params || { }, {
-      rtcConfiguration: options.rtcConfiguration,
-      voiceEventSidGenerator: this._options.voiceEventSidGenerator,
-    });
+    const activeCall = this._activeCall = await this._makeCall(
+      options.params || {},
+      {
+        enableImprovedSignalingErrorPrecision:
+          !!this._options.enableImprovedSignalingErrorPrecision,
+        rtcConfiguration: options.rtcConfiguration,
+        voiceEventSidGenerator: this._options.voiceEventSidGenerator,
+      },
+    );
 
     // Make sure any incoming calls are ignored
     this._calls.splice(0).forEach(call => call.ignore());
@@ -718,7 +723,7 @@ class Device extends EventEmitter {
    * Set the options used within the {@link Device}.
    * @param options
    */
-  updateOptions(options: Device.Options = { }): void {
+  updateOptions(options: Device.Options = {}): void {
     if (this.state === Device.State.Destroyed) {
       throw new InvalidStateError(
         `Attempt to "updateOptions" when device is in state "${this.state}".`,
@@ -761,7 +766,7 @@ class Device extends EventEmitter {
 
     if (this._options.dscp) {
       if (!this._options.rtcConstraints) {
-        this._options.rtcConstraints = { };
+        this._options.rtcConstraints = {};
       }
       (this._options.rtcConstraints as any).optional = [{ googDscp: true }];
     }
@@ -969,6 +974,7 @@ class Device extends EventEmitter {
       getInputStream: (): MediaStream | null => this._options.fileInputStream || this._callInputStream,
       getSinkIds: (): string[] => this._callSinkIds,
       maxAverageBitrate: this._options.maxAverageBitrate,
+      onGetUserMedia: () => this._onGetUserMedia(),
       preflight: this._options.preflight,
       rtcConstraints: this._options.rtcConstraints,
       shouldPlayDisconnect: () => this._audio?.disconnect(),
@@ -1089,9 +1095,19 @@ class Device extends EventEmitter {
   }
 
   /**
+   * Called after a successful getUserMedia call
+   */
+  private _onGetUserMedia = () => {
+    this._audio?._updateAvailableDevices().catch(error => {
+      // Ignore error, we don't want to break the call flow
+      this._log.warn('Unable to updateAvailableDevices after gUM call', error);
+    });
+  }
+
+  /**
    * Called when a 'close' event is received from the signaling stream.
    */
-   private _onSignalingClose = () => {
+  private _onSignalingClose = () => {
     this._stream = null;
     this._streamConnectedPromise = null;
   }
@@ -1164,8 +1180,14 @@ class Device extends EventEmitter {
         // Stop trying to register presence after token expires
         this._stopRegistrationTimer();
         twilioError = new AuthorizationErrors.AccessTokenExpired(originalError);
-      } else if (hasErrorByCode(code)) {
-        twilioError = new (getErrorByCode(code))(originalError);
+      } else {
+        const errorConstructor = getPreciseSignalingErrorByCode(
+          !!this._options.enableImprovedSignalingErrorPrecision,
+          code,
+        );
+        if (typeof errorConstructor !== 'undefined') {
+          twilioError = new errorConstructor(originalError);
+        }
       }
     }
 
@@ -1193,17 +1215,22 @@ class Device extends EventEmitter {
       return;
     }
 
-    const callParameters = payload.parameters || { };
+    const callParameters = payload.parameters || {};
     callParameters.CallSid = callParameters.CallSid || payload.callsid;
 
-    const customParameters = Object.assign({ }, queryToJson(callParameters.Params));
+    const customParameters = Object.assign({}, queryToJson(callParameters.Params));
 
-    const call = await this._makeCall(customParameters, {
-      callParameters,
-      offerSdp: payload.sdp,
-      reconnectToken: payload.reconnect,
-      voiceEventSidGenerator: this._options.voiceEventSidGenerator,
-    });
+    const call = await this._makeCall(
+      customParameters,
+      {
+        callParameters,
+        enableImprovedSignalingErrorPrecision:
+          !!this._options.enableImprovedSignalingErrorPrecision,
+        offerSdp: payload.sdp,
+        reconnectToken: payload.reconnect,
+        voiceEventSidGenerator: this._options.voiceEventSidGenerator,
+      },
+    );
 
     this._calls.push(call);
 
@@ -1297,7 +1324,7 @@ class Device extends EventEmitter {
    * Helper function that sets and emits the state of the device.
    * @param state The new state of the device.
    */
-   private _setState(state: Device.State): void {
+  private _setState(state: Device.State): void {
     if (state === this.state) {
       return;
     }
@@ -1536,6 +1563,13 @@ class Device extends EventEmitter {
 
 namespace Device {
   /**
+   * Emitted when the {@link Device} has been destroyed.
+   * @example `device.on('destroyed', () => { })`
+   * @event
+   */
+  declare function destroyedEvent(): void;
+
+  /**
    * Emitted when the {@link Device} receives an error.
    * @param error
    * @example `device.on('error', call => { })`
@@ -1553,32 +1587,30 @@ namespace Device {
 
   /**
    * Emitted when the {@link Device} is unregistered.
-   * @param device
-   * @example `device.on('unregistered', device => { })`
+   * @example `device.on('unregistered', () => { })`
    * @event
    */
-  declare function unregisteredEvent(device: Device): void;
+  declare function unregisteredEvent(): void;
 
   /**
    * Emitted when the {@link Device} is registering.
-   * @param device
-   * @example `device.on('registering', device => { })`
+   * @example `device.on('registering', () => { })`
    * @event
    */
-  declare function registeringEvent(device: Device): void;
+  declare function registeringEvent(): void;
 
   /**
    * Emitted when the {@link Device} is registered.
-   * @param device
-   * @example `device.on('registered', device => { })`
+   * @example `device.on('registered', () => { })`
    * @event
    */
-  declare function registeredEvent(device: Device): void;
+  declare function registeredEvent(): void;
 
   /**
    * Emitted when the {@link Device}'s token is about to expire. Use DeviceOptions.refreshTokenMs
    * to set a custom warning time. Default is 10000 (10 seconds) prior to the token expiring.
-   * @example `device.on('tokenWillExpire', () => {
+   * @param device
+   * @example `device.on('tokenWillExpire', device => {
    *   const token = getNewTokenViaAjax();
    *   device.updateToken(token);
    * })`
@@ -1700,6 +1732,71 @@ namespace Device {
      * client relative to available edges.
      */
     edge?: string[] | string;
+
+    /**
+     * Enhance the precision of errors emitted by `Device` and `Call` objects.
+     *
+     * The default value of this option is `false`.
+     *
+     * When this flag is enabled, some errors that would have been described
+     * with a generic error code, namely `53000` and `31005`, are now described
+     * with a more precise error code. With this feature, the following errors
+     * now have their own error codes. Please see this
+     * [page](https://www.twilio.com/docs/api/errors) for more details about
+     * each error.
+     *
+     * - Device Error Changes
+     *
+     * @example
+     * ```ts
+     * const device = new Device(token, {
+     *   enableImprovedSignalingErrorPrecision: true,
+     * });
+     * device.on('error', (deviceError) => {
+     *   // the following table describes how deviceError will change with this feature flag
+     * });
+     * ```
+     *
+     * | Device Error Name | Device Error Code with Feature Flag Enabled | Device Error Code with Feature Flag Disabled |
+     * | --- | --- | --- |
+     * | `GeneralErrors.ApplicationNotFoundError` | `31001` | `53000` |
+     * | `GeneralErrors.ConnectionDeclinedError` | `31002` | `53000` |
+     * | `GeneralErrors.ConnectionTimeoutError` | `31003` | `53000` |
+     * | `MalformedRequestErrors.MissingParameterArrayError` | `31101` | `53000` |
+     * | `MalformedRequestErrors.AuthorizationTokenMissingError` | `31102` | `53000` |
+     * | `MalformedRequestErrors.MaxParameterLengthExceededError` | `31103` | `53000` |
+     * | `MalformedRequestErrors.InvalidBridgeTokenError` | `31104` | `53000` |
+     * | `MalformedRequestErrors.InvalidClientNameError` | `31105` | `53000` |
+     * | `MalformedRequestErrors.ReconnectParameterInvalidError` | `31107` | `53000` |
+     * | `SignatureValidationErrors.AccessTokenSignatureValidationFailed` | `31202` | `53000` |
+     * | `AuthorizationErrors.NoValidAccountError` | `31203` | `53000` |
+     * | `AuthorizationErrors.JWTTokenExpirationTooLongError` | `31207` | `53000` |
+     * | `ClientErrors.NotFound` | `31404` | `53000` |
+     * | `ClientErrors.TemporarilyUnavilable` | `31480` | `53000` |
+     * | `ClientErrors.BusyHere` | `31486` | `53000` |
+     * | `SIPServerErrors.Decline` | `31603` | `53000` |
+     *
+     * - Call Error Changes
+     *
+     * @example
+     * ```ts
+     * const device = new Device(token, {
+     *   enableImprovedSignalingErrorPrecision: true,
+     * });
+     * const call = device.connect(...);
+     * call.on('error', (callError) => {
+     *   // the following table describes how callError will change with this feature flag
+     * });
+     * ```
+     *
+     * | Call Error Name | Call Error Code with Feature Flag Enabled | Call Error Code with Feature Flag Disabled |
+     * | --- | --- | --- |
+     * | `GeneralErrors.ConnectionDeclinedError` | `31002` | `31005` |
+     * | `AuthorizationErrors.InvalidJWTTokenError` | `31204` | `31005` |
+     * | `AuthorizationErrors.JWTTokenExpiredError` | `31205` | `31005` |
+     *
+     */
+    enableImprovedSignalingErrorPrecision?: boolean;
 
     /**
      * Overrides the native MediaDevices.enumerateDevices API.

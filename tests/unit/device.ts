@@ -21,7 +21,7 @@ const ClientCapability = require('twilio').jwt.ClientCapability;
 
 // tslint:disable max-classes-per-file only-arrow-functions no-empty
 
-describe('Device', function() {
+describe('Device', function () {
   let activeCall: any;
   let audioHelper: any;
   let clock: SinonFakeTimers;
@@ -32,12 +32,13 @@ describe('Device', function() {
   let publisher: any;
   let stub: SinonStubbedInstance<Device>;
   let token: string;
+  let updateAvailableDevicesStub: any;
   let updateInputStream: Function;
   let updateSinkIds: Function;
 
   let setupStream: () => Promise<void>;
 
-  const sounds: Partial<Record<Device.SoundName, any>> = { };
+  const sounds: Partial<Record<Device.SoundName, any>> = {};
 
   const AudioHelper = (_updateSinkIds: Function, _updateInputStream: Function, getUserMedia: Function, options?: AudioHelper.Options) => {
     enabledSounds = options?.enabledSounds || {
@@ -50,6 +51,7 @@ describe('Device', function() {
     const audioHelper = createEmitterStub(require('../../lib/twilio/audiohelper').default);
     audioHelper._enabledSounds = enabledSounds;
     audioHelper._getEnabledSounds = () => enabledSounds;
+    audioHelper._updateAvailableDevices = updateAvailableDevicesStub;
     audioHelper.disconnect = () => enabledSounds[Device.SoundName.Disconnect];
     audioHelper.incoming = () => enabledSounds[Device.SoundName.Incoming];
     audioHelper.outgoing = () => enabledSounds[Device.SoundName.Outgoing];
@@ -78,6 +80,7 @@ describe('Device', function() {
   beforeEach(() => {
     pstream = null;
     publisher = null;
+    updateAvailableDevicesStub = sinon.stub().returns(Promise.reject());
     clock = sinon.useFakeTimers(Date.now());
     token = createToken('alice');
     device = new Device(token, setupOptions);
@@ -188,7 +191,7 @@ describe('Device', function() {
 
         Object.values(Region).forEach(region => {
           it(`should set host to eventgw.${region}.twilio.com when home is set to ${region}`, () => {
-            pstream.emit('connected', { home: region});
+            pstream.emit('connected', { home: region });
             sinon.assert.calledOnce(publisher.setHost);
             sinon.assert.calledWithExactly(publisher.setHost, `eventgw.${region}.twilio.com`);
           });
@@ -196,6 +199,12 @@ describe('Device', function() {
       });
 
       describe('.connect(params?, audioConstraints?, iceServers?)', () => {
+        it('should update device list after a getUserMediaCall', async () => {
+          await device.connect();
+          connectOptions!.onGetUserMedia();
+          sinon.assert.calledOnce(updateAvailableDevicesStub);
+        });
+
         it('should reject if there is already an active call', async () => {
           await device.connect();
           await assert.rejects(() => device.connect(), /A Call is already active/);
@@ -425,7 +434,7 @@ describe('Device', function() {
         });
 
         it('should re-initialize publisher with the correct host', () => {
-          pstream.emit('connected', { home: 'foo'});
+          pstream.emit('connected', { home: 'foo' });
           device.updateOptions({ appName: 'bar' });
           assert.equal(Publisher.args[1][2].host, 'eventgw.foo.twilio.com');
         });
@@ -601,7 +610,7 @@ describe('Device', function() {
 
         it('should not emit Device.error if payload.error is missing', () => {
           device.emit = sinon.spy();
-          pstream.emit('error', { });
+          pstream.emit('error', {});
           sinon.assert.notCalled(device.emit as any);
         });
 
@@ -625,7 +634,7 @@ describe('Device', function() {
 
         it('should not stop registrations if code is not 31205', async () => {
           await registerDevice();
-          pstream.emit('error', { error: { } });
+          pstream.emit('error', { error: {} });
           pstream.register.reset();
           await clock.tickAsync(30000 + 1);
           sinon.assert.called(pstream.register);
@@ -637,6 +646,29 @@ describe('Device', function() {
           pstream.register.reset();
           await clock.tickAsync(30000 + 1);
           sinon.assert.notCalled(pstream.register);
+        });
+
+        it('should transform when enableImprovedSignalingErrorPrecision is true', async () => {
+          device.updateOptions({ enableImprovedSignalingErrorPrecision: true });
+          await registerDevice();
+          device.emit = sinon.spy();
+          pstream.emit('error', { error: { code: 31480 } });
+          sinon.assert.calledOnce(device.emit as sinon.SinonSpy);
+          sinon.assert.calledWith(device.emit as sinon.SinonSpy, 'error');
+          const errorObject = (device.emit as sinon.SinonSpy).getCall(0).args[1];
+          assert.equal('TemporarilyUnavailable', errorObject.name);
+          assert.equal(31480, errorObject.code);
+        });
+
+        it('should default when enableImprovedSignalingErrorPrecision is false', async () => {
+          device.updateOptions({ enableImprovedSignalingErrorPrecision: false });
+          await registerDevice();
+          device.emit = sinon.spy();
+          pstream.emit('error', { error: { code: 31480 } });
+          sinon.assert.calledOnce(device.emit as sinon.SinonSpy);
+          sinon.assert.calledWith(device.emit as sinon.SinonSpy, 'error');
+          const errorObject = (device.emit as sinon.SinonSpy).getCall(0).args[1];
+          console.error(errorObject);
         });
 
         it('should emit Device.error if code is 31005', () => {
@@ -783,10 +815,10 @@ describe('Device', function() {
           spyIncomingSound = { play: sinon.spy(), stop: sinon.spy() };
           device['_soundcache'].set(Device.SoundName.Incoming, spyIncomingSound);
 
-          const incomingPromise = new Promise(resolve =>
+          const incomingPromise = new Promise<void>(resolve =>
             device.once(Device.EventName.Incoming, () => {
               device.emit = sinon.spy();
-              device.calls[0].parameters = { };
+              device.calls[0].parameters = {};
               resolve();
             }),
           );
@@ -1181,7 +1213,7 @@ describe('Device', function() {
         it('should not create a stream', async () => {
           const setupSpy = device['_setupStream'] = sinon.spy(device['_setupStream']);
           device.updateOptions();
-          await new Promise(resolve => {
+          await new Promise<void>(resolve => {
             sinon.assert.notCalled(setupSpy);
             resolve();
           });
@@ -1295,8 +1327,8 @@ describe('Device', function() {
         beforeEachHook: () => setupStream(),
         title: 'signaling connected',
       }, {
-        afterEachHook: async () => {},
-        beforeEachHook: async () => {},
+        afterEachHook: async () => { },
+        beforeEachHook: async () => { },
         title: 'signaling not connected',
       }].forEach(({ afterEachHook, beforeEachHook, title }) => {
         describe(title, () => {

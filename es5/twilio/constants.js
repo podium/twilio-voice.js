@@ -11,7 +11,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SOUNDS_BASE_URL = exports.RELEASE_VERSION = exports.PACKAGE_NAME = exports.ECHO_TEST_DURATION = exports.COWBELL_AUDIO_URL = void 0;
 var PACKAGE_NAME = '@twilio/voice-sdk';
 exports.PACKAGE_NAME = PACKAGE_NAME;
-var RELEASE_VERSION = '2.6.1-dev';
+var RELEASE_VERSION = '2.8.1-dev';
 exports.RELEASE_VERSION = RELEASE_VERSION;
 var SOUNDS_BASE_URL = 'https://sdk.twilio.com/js/client/sounds/releases/1.0.0';
 exports.SOUNDS_BASE_URL = SOUNDS_BASE_URL;

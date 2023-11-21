@@ -75,7 +75,7 @@ root.navigator = {
   userAgent: 'userAgent',
 };
 
-root.RTCPeerConnection = root.window.RTCPeerConnection = function() { };
+root.RTCPeerConnection = root.window.RTCPeerConnection = function () { };
 require('./audiohelper');
 require('./outputdevicecollection');
 require('./eventpublisher');
@@ -102,5 +102,3 @@ require('./unit/error');
 require('./unit/log');
 require('./unit/regions');
 require('./unit/uuid');
-
-require('./shims/mediadevices');

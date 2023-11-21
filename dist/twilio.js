@@ -1,4 +1,4 @@
-/*! @twilio/voice-sdk.js 2.6.1-dev
+/*! @twilio/voice-sdk.js 2.8.1-dev
 
 The following license applies to all parts of this software except as
 documented below.
@@ -258,7 +258,6 @@ var errors_1 = require("./errors");
 var log_1 = require("./log");
 var outputdevicecollection_1 = require("./outputdevicecollection");
 var mediadeviceinfo_1 = require("./shims/mediadeviceinfo");
-var mediadevices_1 = require("./shims/mediadevices");
 var util_1 = require("./util");
 /**
  * Aliases for audio kinds, used for labelling.
@@ -329,6 +328,29 @@ var AudioHelper = /** @class */ (function (_super) {
             audiooutput: {},
         };
         /**
+         * Update the available input and output devices
+         * @private
+         */
+        _this._updateAvailableDevices = function () {
+            if (!_this._mediaDevices || !_this._enumerateDevices) {
+                return Promise.reject('Enumeration not supported');
+            }
+            return _this._enumerateDevices().then(function (devices) {
+                _this._updateDevices(devices.filter(function (d) { return d.kind === 'audiooutput'; }), _this.availableOutputDevices, _this._removeLostOutput);
+                _this._updateDevices(devices.filter(function (d) { return d.kind === 'audioinput'; }), _this.availableInputDevices, _this._removeLostInput);
+                var defaultDevice = _this.availableOutputDevices.get('default')
+                    || Array.from(_this.availableOutputDevices.values())[0];
+                [_this.speakerDevices, _this.ringtoneDevices].forEach(function (outputDevices) {
+                    if (!outputDevices.get().size && _this.availableOutputDevices.size && _this.isOutputSelectionSupported) {
+                        outputDevices.set(defaultDevice.deviceId)
+                            .catch(function (reason) {
+                            _this._log.warn("Unable to set audio output devices. " + reason);
+                        });
+                    }
+                });
+            });
+        };
+        /**
          * Remove an input device from inputs
          * @param lostDevice
          * @returns Whether the device was active
@@ -357,38 +379,16 @@ var AudioHelper = /** @class */ (function (_super) {
             var wasRingtoneLost = _this.ringtoneDevices.delete(lostDevice);
             return wasSpeakerLost || wasRingtoneLost;
         };
-        /**
-         * Update the available input and output devices
-         */
-        _this._updateAvailableDevices = function () {
-            if (!_this._mediaDevices || !_this._enumerateDevices) {
-                return Promise.reject('Enumeration not supported');
-            }
-            return _this._enumerateDevices().then(function (devices) {
-                _this._updateDevices(devices.filter(function (d) { return d.kind === 'audiooutput'; }), _this.availableOutputDevices, _this._removeLostOutput);
-                _this._updateDevices(devices.filter(function (d) { return d.kind === 'audioinput'; }), _this.availableInputDevices, _this._removeLostInput);
-                var defaultDevice = _this.availableOutputDevices.get('default')
-                    || Array.from(_this.availableOutputDevices.values())[0];
-                [_this.speakerDevices, _this.ringtoneDevices].forEach(function (outputDevices) {
-                    if (!outputDevices.get().size && _this.availableOutputDevices.size && _this.isOutputSelectionSupported) {
-                        outputDevices.set(defaultDevice.deviceId)
-                            .catch(function (reason) {
-                            _this._log.warn("Unable to set audio output devices. " + reason);
-                        });
-                    }
-                });
-            });
-        };
         options = Object.assign({
             AudioContext: typeof AudioContext !== 'undefined' && AudioContext,
             setSinkId: typeof HTMLAudioElement !== 'undefined' && HTMLAudioElement.prototype.setSinkId,
         }, options);
         _this._getUserMedia = getUserMedia;
-        _this._mediaDevices = options.mediaDevices || mediadevices_1.default();
+        _this._mediaDevices = options.mediaDevices || navigator.mediaDevices;
         _this._onActiveInputChanged = onActiveInputChanged;
         _this._enumerateDevices = typeof options.enumerateDevices === 'function'
             ? options.enumerateDevices
-            : _this._mediaDevices && _this._mediaDevices.enumerateDevices;
+            : _this._mediaDevices && _this._mediaDevices.enumerateDevices.bind(_this._mediaDevices);
         var isAudioContextSupported = !!(options.AudioContext || options.audioContext);
         var isEnumerationSupported = !!_this._enumerateDevices;
         if (options.enabledSounds) {
@@ -522,7 +522,6 @@ var AudioHelper = /** @class */ (function (_super) {
         }
         if (this._mediaDevices.removeEventListener) {
             this._mediaDevices.removeEventListener('devicechange', this._updateAvailableDevices);
-            this._mediaDevices.removeEventListener('deviceinfochange', this._updateAvailableDevices);
         }
     };
     /**
@@ -630,7 +629,6 @@ var AudioHelper = /** @class */ (function (_super) {
         }
         if (this._mediaDevices.addEventListener) {
             this._mediaDevices.addEventListener('devicechange', this._updateAvailableDevices);
-            this._mediaDevices.addEventListener('deviceinfochange', this._updateAvailableDevices);
         }
         this._updateAvailableDevices().then(function () {
             if (!_this.isOutputSelectionSupported) {
@@ -798,7 +796,7 @@ var AudioHelper = /** @class */ (function (_super) {
 })(AudioHelper || (AudioHelper = {}));
 exports.default = AudioHelper;
 
-},{"./device":11,"./errors":14,"./log":17,"./outputdevicecollection":18,"./shims/mediadeviceinfo":33,"./shims/mediadevices":34,"./util":37,"events":40}],4:[function(require,module,exports){
+},{"./device":11,"./errors":14,"./log":17,"./outputdevicecollection":18,"./shims/mediadeviceinfo":32,"./util":35,"events":38}],4:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -1262,7 +1260,7 @@ var EventTarget = /** @class */ (function () {
 }());
 exports.default = EventTarget;
 
-},{"events":40}],7:[function(require,module,exports){
+},{"events":38}],7:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -1352,7 +1350,7 @@ var Backoff = /** @class */ (function (_super) {
 }(events_1.EventEmitter));
 exports.default = Backoff;
 
-},{"events":40}],8:[function(require,module,exports){
+},{"events":38}],8:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -1505,6 +1503,7 @@ var Call = /** @class */ (function (_super) {
          */
         _this._options = {
             MediaHandler: rtc_1.PeerConnection,
+            enableImprovedSignalingErrorPrecision: false,
             offerSdp: null,
             shouldPlayDisconnect: function () { return true; },
             voiceEventSidGenerator: uuid_1.generateVoiceEventSid,
@@ -1626,7 +1625,7 @@ var Call = /** @class */ (function (_super) {
          */
         _this._onConnected = function () {
             _this._log.info('Received connected from pstream');
-            if (_this._signalingReconnectToken) {
+            if (_this._signalingReconnectToken && _this._mediaHandler.version) {
                 _this._pstream.reconnect(_this._mediaHandler.version.getSDP(), _this.parameters.CallSid, _this._signalingReconnectToken);
             }
         };
@@ -1655,7 +1654,11 @@ var Call = /** @class */ (function (_super) {
             }
             _this._log.info('Received HANGUP from gateway');
             if (payload.error) {
-                var error = new errors_1.GeneralErrors.ConnectionError('Error sent from gateway in HANGUP');
+                var code = payload.error.code;
+                var errorConstructor = errors_1.getPreciseSignalingErrorByCode(_this._options.enableImprovedSignalingErrorPrecision, code);
+                var error = typeof errorConstructor !== 'undefined'
+                    ? new errorConstructor(payload.error.message)
+                    : new errors_1.GeneralErrors.ConnectionError('Error sent from gateway in HANGUP');
                 _this._log.error('Received an error from the gateway:', error);
                 _this.emit('error', error);
             }
@@ -2198,6 +2201,9 @@ var Call = /** @class */ (function (_super) {
             _this._publisher.info('get-user-media', 'succeeded', {
                 data: { audioConstraints: audioConstraints },
             }, _this);
+            if (_this._options.onGetUserMedia) {
+                _this._options.onGetUserMedia();
+            }
             connect();
         }, function (error) {
             var twilioError;
@@ -2675,7 +2681,7 @@ function generateTempCallSid() {
 }
 exports.default = Call;
 
-},{"./backoff":7,"./constants":9,"./device":11,"./errors":14,"./log":17,"./rtc":25,"./rtc/icecandidate":24,"./rtc/sdp":30,"./statsMonitor":36,"./util":37,"./uuid":38,"events":40}],9:[function(require,module,exports){
+},{"./backoff":7,"./constants":9,"./device":11,"./errors":14,"./log":17,"./rtc":25,"./rtc/icecandidate":24,"./rtc/sdp":30,"./statsMonitor":34,"./util":35,"./uuid":36,"events":38}],9:[function(require,module,exports){
 "use strict";
 /**
  * This file is generated on build. To make changes, see /templates/constants.ts
@@ -2689,7 +2695,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SOUNDS_BASE_URL = exports.RELEASE_VERSION = exports.PACKAGE_NAME = exports.ECHO_TEST_DURATION = exports.COWBELL_AUDIO_URL = void 0;
 var PACKAGE_NAME = '@twilio/voice-sdk';
 exports.PACKAGE_NAME = PACKAGE_NAME;
-var RELEASE_VERSION = '2.6.1-dev';
+var RELEASE_VERSION = '2.8.1-dev';
 exports.RELEASE_VERSION = RELEASE_VERSION;
 var SOUNDS_BASE_URL = 'https://sdk.twilio.com/js/client/sounds/releases/1.0.0';
 exports.SOUNDS_BASE_URL = SOUNDS_BASE_URL;
@@ -2886,6 +2892,7 @@ var Device = /** @class */ (function (_super) {
             closeProtection: false,
             codecPreferences: [call_1.default.Codec.PCMU, call_1.default.Codec.Opus],
             dscp: true,
+            enableImprovedSignalingErrorPrecision: false,
             forceAggressiveIceNomination: false,
             logLevel: loglevel_1.levels.ERROR,
             maxCallSignalingTimeoutMs: 0,
@@ -2996,6 +3003,16 @@ var Device = /** @class */ (function (_super) {
             return payload;
         };
         /**
+         * Called after a successful getUserMedia call
+         */
+        _this._onGetUserMedia = function () {
+            var _a;
+            (_a = _this._audio) === null || _a === void 0 ? void 0 : _a._updateAvailableDevices().catch(function (error) {
+                // Ignore error, we don't want to break the call flow
+                _this._log.warn('Unable to updateAvailableDevices after gUM call', error);
+            });
+        };
+        /**
          * Called when a 'close' event is received from the signaling stream.
          */
         _this._onSignalingClose = function () {
@@ -3067,8 +3084,11 @@ var Device = /** @class */ (function (_super) {
                     _this._stopRegistrationTimer();
                     twilioError = new errors_1.AuthorizationErrors.AccessTokenExpired(originalError);
                 }
-                else if (errors_1.hasErrorByCode(code)) {
-                    twilioError = new (errors_1.getErrorByCode(code))(originalError);
+                else {
+                    var errorConstructor = errors_1.getPreciseSignalingErrorByCode(!!_this._options.enableImprovedSignalingErrorPrecision, code);
+                    if (typeof errorConstructor !== 'undefined') {
+                        twilioError = new errorConstructor(originalError);
+                    }
                 }
             }
             if (!twilioError) {
@@ -3102,6 +3122,7 @@ var Device = /** @class */ (function (_super) {
                         customParameters = Object.assign({}, util_1.queryToJson(callParameters.Params));
                         return [4 /*yield*/, this._makeCall(customParameters, {
                                 callParameters: callParameters,
+                                enableImprovedSignalingErrorPrecision: !!this._options.enableImprovedSignalingErrorPrecision,
                                 offerSdp: payload.sdp,
                                 reconnectToken: payload.reconnect,
                                 voiceEventSidGenerator: this._options.voiceEventSidGenerator,
@@ -3364,6 +3385,7 @@ var Device = /** @class */ (function (_super) {
                         }
                         _a = this;
                         return [4 /*yield*/, this._makeCall(options.params || {}, {
+                                enableImprovedSignalingErrorPrecision: !!this._options.enableImprovedSignalingErrorPrecision,
                                 rtcConfiguration: options.rtcConfiguration,
                                 voiceEventSidGenerator: this._options.voiceEventSidGenerator,
                             })];
@@ -3751,6 +3773,7 @@ var Device = /** @class */ (function (_super) {
                             getInputStream: function () { return _this._options.fileInputStream || _this._callInputStream; },
                             getSinkIds: function () { return _this._callSinkIds; },
                             maxAverageBitrate: this._options.maxAverageBitrate,
+                            onGetUserMedia: function () { return _this._onGetUserMedia(); },
                             preflight: this._options.preflight,
                             rtcConstraints: this._options.rtcConstraints,
                             shouldPlayDisconnect: function () { var _a; return (_a = _this._audio) === null || _a === void 0 ? void 0 : _a.disconnect(); },
@@ -4135,7 +4158,7 @@ var Device = /** @class */ (function (_super) {
 })(Device || (Device = {}));
 exports.default = Device;
 
-},{"./audiohelper":3,"./call":8,"./constants":9,"./dialtonePlayer":12,"./errors":14,"./eventpublisher":16,"./log":17,"./preflight/preflight":19,"./pstream":20,"./regions":21,"./rtc":25,"./rtc/getusermedia":23,"./sound":35,"./util":37,"./uuid":38,"events":40,"loglevel":44}],12:[function(require,module,exports){
+},{"./audiohelper":3,"./call":8,"./constants":9,"./dialtonePlayer":12,"./errors":14,"./eventpublisher":16,"./log":17,"./preflight/preflight":19,"./pstream":20,"./regions":21,"./rtc":25,"./rtc/getusermedia":23,"./sound":33,"./util":35,"./uuid":36,"events":38,"loglevel":42}],12:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -4233,7 +4256,7 @@ var __extends = (this && this.__extends) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.errorsByCode = exports.MediaErrors = exports.SignalingErrors = exports.UserMediaErrors = exports.MalformedRequestErrors = exports.GeneralErrors = exports.ClientErrors = exports.AuthorizationErrors = exports.TwilioError = void 0;
+exports.errorsByCode = exports.MediaErrors = exports.SignalingErrors = exports.UserMediaErrors = exports.MalformedRequestErrors = exports.GeneralErrors = exports.SIPServerErrors = exports.ClientErrors = exports.SignatureValidationErrors = exports.AuthorizationErrors = exports.TwilioError = void 0;
 /**
  * This is a generated file. Any modifications here will be overwritten. See scripts/errors.js.
  */
@@ -4314,6 +4337,37 @@ var AuthorizationErrors;
     }(twilioError_1.default));
     AuthorizationErrors.AuthenticationFailed = AuthenticationFailed;
 })(AuthorizationErrors = exports.AuthorizationErrors || (exports.AuthorizationErrors = {}));
+var SignatureValidationErrors;
+(function (SignatureValidationErrors) {
+    var AccessTokenSignatureValidationFailed = /** @class */ (function (_super) {
+        __extends(AccessTokenSignatureValidationFailed, _super);
+        function AccessTokenSignatureValidationFailed(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [
+                'The access token has an invalid Account SID, API Key, or API Key Secret.',
+            ];
+            _this.code = 31202;
+            _this.description = 'Signature validation failed.';
+            _this.explanation = 'The provided access token failed signature validation.';
+            _this.name = 'AccessTokenSignatureValidationFailed';
+            _this.solutions = [
+                'Ensure the Account SID, API Key, and API Key Secret are valid when generating your access token.',
+            ];
+            Object.setPrototypeOf(_this, SignatureValidationErrors.AccessTokenSignatureValidationFailed.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return AccessTokenSignatureValidationFailed;
+    }(twilioError_1.default));
+    SignatureValidationErrors.AccessTokenSignatureValidationFailed = AccessTokenSignatureValidationFailed;
+})(SignatureValidationErrors = exports.SignatureValidationErrors || (exports.SignatureValidationErrors = {}));
 var ClientErrors;
 (function (ClientErrors) {
     var BadRequest = /** @class */ (function (_super) {
@@ -4340,7 +4394,112 @@ var ClientErrors;
         return BadRequest;
     }(twilioError_1.default));
     ClientErrors.BadRequest = BadRequest;
+    var NotFound = /** @class */ (function (_super) {
+        __extends(NotFound, _super);
+        function NotFound(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [
+                'The outbound call was made to an invalid phone number.',
+                'The TwiML application sid is missing a Voice URL.',
+            ];
+            _this.code = 31404;
+            _this.description = 'Not Found (HTTP/SIP)';
+            _this.explanation = 'The server has not found anything matching the request.';
+            _this.name = 'NotFound';
+            _this.solutions = [
+                'Ensure the phone number dialed is valid.',
+                'Ensure the TwiML application is configured correctly with a Voice URL link.',
+            ];
+            Object.setPrototypeOf(_this, ClientErrors.NotFound.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return NotFound;
+    }(twilioError_1.default));
+    ClientErrors.NotFound = NotFound;
+    var TemporarilyUnavailable = /** @class */ (function (_super) {
+        __extends(TemporarilyUnavailable, _super);
+        function TemporarilyUnavailable(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31480;
+            _this.description = 'Temporarily Unavailable (SIP)';
+            _this.explanation = 'The callee is currently unavailable.';
+            _this.name = 'TemporarilyUnavailable';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, ClientErrors.TemporarilyUnavailable.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return TemporarilyUnavailable;
+    }(twilioError_1.default));
+    ClientErrors.TemporarilyUnavailable = TemporarilyUnavailable;
+    var BusyHere = /** @class */ (function (_super) {
+        __extends(BusyHere, _super);
+        function BusyHere(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31486;
+            _this.description = 'Busy Here (SIP)';
+            _this.explanation = 'The callee is busy.';
+            _this.name = 'BusyHere';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, ClientErrors.BusyHere.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return BusyHere;
+    }(twilioError_1.default));
+    ClientErrors.BusyHere = BusyHere;
 })(ClientErrors = exports.ClientErrors || (exports.ClientErrors = {}));
+var SIPServerErrors;
+(function (SIPServerErrors) {
+    var Decline = /** @class */ (function (_super) {
+        __extends(Decline, _super);
+        function Decline(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31603;
+            _this.description = 'Decline (SIP)';
+            _this.explanation = 'The callee does not wish to participate in the call.';
+            _this.name = 'Decline';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, SIPServerErrors.Decline.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return Decline;
+    }(twilioError_1.default));
+    SIPServerErrors.Decline = Decline;
+})(SIPServerErrors = exports.SIPServerErrors || (exports.SIPServerErrors = {}));
 var GeneralErrors;
 (function (GeneralErrors) {
     var UnknownError = /** @class */ (function (_super) {
@@ -4367,6 +4526,78 @@ var GeneralErrors;
         return UnknownError;
     }(twilioError_1.default));
     GeneralErrors.UnknownError = UnknownError;
+    var ApplicationNotFoundError = /** @class */ (function (_super) {
+        __extends(ApplicationNotFoundError, _super);
+        function ApplicationNotFoundError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31001;
+            _this.description = 'Application Not Found';
+            _this.explanation = '';
+            _this.name = 'ApplicationNotFoundError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, GeneralErrors.ApplicationNotFoundError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return ApplicationNotFoundError;
+    }(twilioError_1.default));
+    GeneralErrors.ApplicationNotFoundError = ApplicationNotFoundError;
+    var ConnectionDeclinedError = /** @class */ (function (_super) {
+        __extends(ConnectionDeclinedError, _super);
+        function ConnectionDeclinedError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31002;
+            _this.description = 'Connection Declined';
+            _this.explanation = '';
+            _this.name = 'ConnectionDeclinedError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, GeneralErrors.ConnectionDeclinedError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return ConnectionDeclinedError;
+    }(twilioError_1.default));
+    GeneralErrors.ConnectionDeclinedError = ConnectionDeclinedError;
+    var ConnectionTimeoutError = /** @class */ (function (_super) {
+        __extends(ConnectionTimeoutError, _super);
+        function ConnectionTimeoutError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31003;
+            _this.description = 'Connection Timeout';
+            _this.explanation = 'The server could not produce a response within a suitable amount of time.';
+            _this.name = 'ConnectionTimeoutError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, GeneralErrors.ConnectionTimeoutError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return ConnectionTimeoutError;
+    }(twilioError_1.default));
+    GeneralErrors.ConnectionTimeoutError = ConnectionTimeoutError;
     var ConnectionError = /** @class */ (function (_super) {
         __extends(ConnectionError, _super);
         function ConnectionError(messageOrError, error) {
@@ -4472,8 +4703,252 @@ var MalformedRequestErrors;
         return MalformedRequestError;
     }(twilioError_1.default));
     MalformedRequestErrors.MalformedRequestError = MalformedRequestError;
+    var MissingParameterArrayError = /** @class */ (function (_super) {
+        __extends(MissingParameterArrayError, _super);
+        function MissingParameterArrayError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31101;
+            _this.description = 'Missing parameter array in request';
+            _this.explanation = '';
+            _this.name = 'MissingParameterArrayError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, MalformedRequestErrors.MissingParameterArrayError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return MissingParameterArrayError;
+    }(twilioError_1.default));
+    MalformedRequestErrors.MissingParameterArrayError = MissingParameterArrayError;
+    var AuthorizationTokenMissingError = /** @class */ (function (_super) {
+        __extends(AuthorizationTokenMissingError, _super);
+        function AuthorizationTokenMissingError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31102;
+            _this.description = 'Authorization token missing in request.';
+            _this.explanation = '';
+            _this.name = 'AuthorizationTokenMissingError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, MalformedRequestErrors.AuthorizationTokenMissingError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return AuthorizationTokenMissingError;
+    }(twilioError_1.default));
+    MalformedRequestErrors.AuthorizationTokenMissingError = AuthorizationTokenMissingError;
+    var MaxParameterLengthExceededError = /** @class */ (function (_super) {
+        __extends(MaxParameterLengthExceededError, _super);
+        function MaxParameterLengthExceededError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31103;
+            _this.description = 'Maximum parameter length has been exceeded.';
+            _this.explanation = 'Length of parameters cannot exceed MAX_PARAM_LENGTH.';
+            _this.name = 'MaxParameterLengthExceededError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, MalformedRequestErrors.MaxParameterLengthExceededError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return MaxParameterLengthExceededError;
+    }(twilioError_1.default));
+    MalformedRequestErrors.MaxParameterLengthExceededError = MaxParameterLengthExceededError;
+    var InvalidBridgeTokenError = /** @class */ (function (_super) {
+        __extends(InvalidBridgeTokenError, _super);
+        function InvalidBridgeTokenError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31104;
+            _this.description = 'Invalid bridge token';
+            _this.explanation = '';
+            _this.name = 'InvalidBridgeTokenError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, MalformedRequestErrors.InvalidBridgeTokenError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return InvalidBridgeTokenError;
+    }(twilioError_1.default));
+    MalformedRequestErrors.InvalidBridgeTokenError = InvalidBridgeTokenError;
+    var InvalidClientNameError = /** @class */ (function (_super) {
+        __extends(InvalidClientNameError, _super);
+        function InvalidClientNameError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [
+                'Client name contains invalid characters.',
+            ];
+            _this.code = 31105;
+            _this.description = 'Invalid client name';
+            _this.explanation = 'Client name should not contain control, space, delims, or unwise characters.';
+            _this.name = 'InvalidClientNameError';
+            _this.solutions = [
+                'Make sure that client name does not contain any of the invalid characters.',
+            ];
+            Object.setPrototypeOf(_this, MalformedRequestErrors.InvalidClientNameError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return InvalidClientNameError;
+    }(twilioError_1.default));
+    MalformedRequestErrors.InvalidClientNameError = InvalidClientNameError;
+    var ReconnectParameterInvalidError = /** @class */ (function (_super) {
+        __extends(ReconnectParameterInvalidError, _super);
+        function ReconnectParameterInvalidError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31107;
+            _this.description = 'The reconnect parameter is invalid';
+            _this.explanation = '';
+            _this.name = 'ReconnectParameterInvalidError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, MalformedRequestErrors.ReconnectParameterInvalidError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return ReconnectParameterInvalidError;
+    }(twilioError_1.default));
+    MalformedRequestErrors.ReconnectParameterInvalidError = ReconnectParameterInvalidError;
 })(MalformedRequestErrors = exports.MalformedRequestErrors || (exports.MalformedRequestErrors = {}));
 (function (AuthorizationErrors) {
+    var AuthorizationError = /** @class */ (function (_super) {
+        __extends(AuthorizationError, _super);
+        function AuthorizationError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31201;
+            _this.description = 'Authorization error';
+            _this.explanation = 'The request requires user authentication. The server understood the request, but is refusing to fulfill it.';
+            _this.name = 'AuthorizationError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, AuthorizationErrors.AuthorizationError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return AuthorizationError;
+    }(twilioError_1.default));
+    AuthorizationErrors.AuthorizationError = AuthorizationError;
+    var NoValidAccountError = /** @class */ (function (_super) {
+        __extends(NoValidAccountError, _super);
+        function NoValidAccountError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31203;
+            _this.description = 'No valid account';
+            _this.explanation = '';
+            _this.name = 'NoValidAccountError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, AuthorizationErrors.NoValidAccountError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return NoValidAccountError;
+    }(twilioError_1.default));
+    AuthorizationErrors.NoValidAccountError = NoValidAccountError;
+    var InvalidJWTTokenError = /** @class */ (function (_super) {
+        __extends(InvalidJWTTokenError, _super);
+        function InvalidJWTTokenError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31204;
+            _this.description = 'Invalid JWT token';
+            _this.explanation = '';
+            _this.name = 'InvalidJWTTokenError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, AuthorizationErrors.InvalidJWTTokenError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return InvalidJWTTokenError;
+    }(twilioError_1.default));
+    AuthorizationErrors.InvalidJWTTokenError = InvalidJWTTokenError;
+    var JWTTokenExpiredError = /** @class */ (function (_super) {
+        __extends(JWTTokenExpiredError, _super);
+        function JWTTokenExpiredError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31205;
+            _this.description = 'JWT token expired';
+            _this.explanation = '';
+            _this.name = 'JWTTokenExpiredError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, AuthorizationErrors.JWTTokenExpiredError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return JWTTokenExpiredError;
+    }(twilioError_1.default));
+    AuthorizationErrors.JWTTokenExpiredError = JWTTokenExpiredError;
     var RateExceededError = /** @class */ (function (_super) {
         __extends(RateExceededError, _super);
         function RateExceededError(messageOrError, error) {
@@ -4502,6 +4977,30 @@ var MalformedRequestErrors;
         return RateExceededError;
     }(twilioError_1.default));
     AuthorizationErrors.RateExceededError = RateExceededError;
+    var JWTTokenExpirationTooLongError = /** @class */ (function (_super) {
+        __extends(JWTTokenExpirationTooLongError, _super);
+        function JWTTokenExpirationTooLongError(messageOrError, error) {
+            var _this = _super.call(this, messageOrError, error) || this;
+            _this.causes = [];
+            _this.code = 31207;
+            _this.description = 'JWT token expiration too long';
+            _this.explanation = '';
+            _this.name = 'JWTTokenExpirationTooLongError';
+            _this.solutions = [];
+            Object.setPrototypeOf(_this, AuthorizationErrors.JWTTokenExpirationTooLongError.prototype);
+            var message = typeof messageOrError === 'string'
+                ? messageOrError
+                : _this.explanation;
+            var originalError = typeof messageOrError === 'object'
+                ? messageOrError
+                : error;
+            _this.message = _this.name + " (" + _this.code + "): " + message;
+            _this.originalError = originalError;
+            return _this;
+        }
+        return JWTTokenExpirationTooLongError;
+    }(twilioError_1.default));
+    AuthorizationErrors.JWTTokenExpirationTooLongError = JWTTokenExpirationTooLongError;
     var PayloadSizeExceededError = /** @class */ (function (_super) {
         __extends(PayloadSizeExceededError, _super);
         function PayloadSizeExceededError(messageOrError, error) {
@@ -4749,13 +5248,32 @@ exports.errorsByCode = new Map([
     [20101, AuthorizationErrors.AccessTokenInvalid],
     [20104, AuthorizationErrors.AccessTokenExpired],
     [20151, AuthorizationErrors.AuthenticationFailed],
+    [31202, SignatureValidationErrors.AccessTokenSignatureValidationFailed],
     [31400, ClientErrors.BadRequest],
+    [31404, ClientErrors.NotFound],
+    [31480, ClientErrors.TemporarilyUnavailable],
+    [31486, ClientErrors.BusyHere],
+    [31603, SIPServerErrors.Decline],
     [31000, GeneralErrors.UnknownError],
+    [31001, GeneralErrors.ApplicationNotFoundError],
+    [31002, GeneralErrors.ConnectionDeclinedError],
+    [31003, GeneralErrors.ConnectionTimeoutError],
     [31005, GeneralErrors.ConnectionError],
     [31008, GeneralErrors.CallCancelledError],
     [31009, GeneralErrors.TransportError],
     [31100, MalformedRequestErrors.MalformedRequestError],
+    [31101, MalformedRequestErrors.MissingParameterArrayError],
+    [31102, MalformedRequestErrors.AuthorizationTokenMissingError],
+    [31103, MalformedRequestErrors.MaxParameterLengthExceededError],
+    [31104, MalformedRequestErrors.InvalidBridgeTokenError],
+    [31105, MalformedRequestErrors.InvalidClientNameError],
+    [31107, MalformedRequestErrors.ReconnectParameterInvalidError],
+    [31201, AuthorizationErrors.AuthorizationError],
+    [31203, AuthorizationErrors.NoValidAccountError],
+    [31204, AuthorizationErrors.InvalidJWTTokenError],
+    [31205, AuthorizationErrors.JWTTokenExpiredError],
     [31206, AuthorizationErrors.RateExceededError],
+    [31207, AuthorizationErrors.JWTTokenExpirationTooLongError],
     [31209, AuthorizationErrors.PayloadSizeExceededError],
     [31401, UserMediaErrors.PermissionDeniedError],
     [31402, UserMediaErrors.AcquisitionFailedError],
@@ -4783,7 +5301,7 @@ var __extends = (this && this.__extends) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UserMediaErrors = exports.TwilioError = exports.SignalingErrors = exports.MediaErrors = exports.GeneralErrors = exports.ClientErrors = exports.AuthorizationErrors = exports.hasErrorByCode = exports.getErrorByCode = exports.NotSupportedError = exports.InvalidStateError = exports.InvalidArgumentError = void 0;
+exports.UserMediaErrors = exports.TwilioError = exports.SIPServerErrors = exports.SignatureValidationErrors = exports.SignalingErrors = exports.MediaErrors = exports.MalformedRequestErrors = exports.GeneralErrors = exports.ClientErrors = exports.AuthorizationErrors = exports.hasErrorByCode = exports.getErrorByCode = exports.NotSupportedError = exports.InvalidStateError = exports.InvalidArgumentError = exports.getPreciseSignalingErrorByCode = void 0;
 /**
  * @packageDocumentation
  * @internalapi
@@ -4793,10 +5311,75 @@ var generated_1 = require("./generated");
 Object.defineProperty(exports, "AuthorizationErrors", { enumerable: true, get: function () { return generated_1.AuthorizationErrors; } });
 Object.defineProperty(exports, "ClientErrors", { enumerable: true, get: function () { return generated_1.ClientErrors; } });
 Object.defineProperty(exports, "GeneralErrors", { enumerable: true, get: function () { return generated_1.GeneralErrors; } });
+Object.defineProperty(exports, "MalformedRequestErrors", { enumerable: true, get: function () { return generated_1.MalformedRequestErrors; } });
 Object.defineProperty(exports, "MediaErrors", { enumerable: true, get: function () { return generated_1.MediaErrors; } });
 Object.defineProperty(exports, "SignalingErrors", { enumerable: true, get: function () { return generated_1.SignalingErrors; } });
+Object.defineProperty(exports, "SignatureValidationErrors", { enumerable: true, get: function () { return generated_1.SignatureValidationErrors; } });
+Object.defineProperty(exports, "SIPServerErrors", { enumerable: true, get: function () { return generated_1.SIPServerErrors; } });
 Object.defineProperty(exports, "TwilioError", { enumerable: true, get: function () { return generated_1.TwilioError; } });
 Object.defineProperty(exports, "UserMediaErrors", { enumerable: true, get: function () { return generated_1.UserMediaErrors; } });
+/**
+ * NOTE(mhuynh): Replacing generic error codes with new (more specific) codes,
+ * is a breaking change. If an error code is found in this set, we only perform
+ * the transformation if the feature flag is enabled.
+ *
+ * With every major version bump, such that we are allowed to introduce breaking
+ * changes as per semver specification, this array should be cleared.
+ *
+ * TODO: [VBLOCKS-2295] Remove this in 3.x
+ */
+var PRECISE_SIGNALING_ERROR_CODES = new Set([
+    /**
+     * 310XX Errors
+     */
+    31001,
+    31002,
+    31003,
+    /**
+     * 311XX Errors
+     */
+    31101,
+    31102,
+    31103,
+    31104,
+    31105,
+    31107,
+    /**
+     * 312XX Errors
+     */
+    31201,
+    31202,
+    31203,
+    31204,
+    31205,
+    31207,
+    /**
+     * 314XX Errors
+     */
+    31404,
+    31480,
+    31486,
+    /**
+     * 316XX Errors
+     */
+    31603,
+]);
+function getPreciseSignalingErrorByCode(enableImprovedSignalingErrorPrecision, errorCode) {
+    if (typeof errorCode !== 'number') {
+        return;
+    }
+    if (!hasErrorByCode(errorCode)) {
+        return;
+    }
+    var shouldTransform = enableImprovedSignalingErrorPrecision
+        ? true
+        : !PRECISE_SIGNALING_ERROR_CODES.has(errorCode);
+    if (!shouldTransform) {
+        return;
+    }
+    return getErrorByCode(errorCode);
+}
+exports.getPreciseSignalingErrorByCode = getPreciseSignalingErrorByCode;
 // Application errors that can be avoided by good app logic
 var InvalidArgumentError = /** @class */ (function (_super) {
     __extends(InvalidArgumentError, _super);
@@ -5168,7 +5751,7 @@ function formatMetric(sample) {
 }
 exports.default = EventPublisher;
 
-},{"./request":22,"events":40}],17:[function(require,module,exports){
+},{"./request":22,"events":38}],17:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -5284,7 +5867,7 @@ var Log = /** @class */ (function () {
 exports.Logger = Log.getInstance().getLogLevelInstance();
 exports.default = Log;
 
-},{"./constants":9,"loglevel":44}],18:[function(require,module,exports){
+},{"./constants":9,"loglevel":42}],18:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -5988,7 +6571,7 @@ exports.PreflightTest = PreflightTest;
 })(PreflightTest = exports.PreflightTest || (exports.PreflightTest = {}));
 exports.PreflightTest = PreflightTest;
 
-},{"../call":8,"../constants":9,"../device":11,"../errors":14,"../rtc/stats":31,"events":40}],20:[function(require,module,exports){
+},{"../call":8,"../constants":9,"../device":11,"../errors":14,"../rtc/stats":31,"events":38}],20:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -6274,7 +6857,7 @@ function getBrowserInfo() {
 }
 exports.default = PStream;
 
-},{"./constants":9,"./errors":14,"./log":17,"./wstransport":39,"events":40}],21:[function(require,module,exports){
+},{"./constants":9,"./errors":14,"./log":17,"./wstransport":37,"events":38}],21:[function(require,module,exports){
 "use strict";
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -6560,7 +7143,7 @@ function getUserMedia(constraints, options) {
 }
 exports.default = getUserMedia;
 
-},{"../errors":14,"../util":37}],24:[function(require,module,exports){
+},{"../errors":14,"../util":35}],24:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -8174,7 +8757,7 @@ function setAudioSource(audio, stream) {
 PeerConnection.enabled = rtcpc_1.default.test();
 exports.default = PeerConnection;
 
-},{"../errors":14,"../log":17,"../util":37,"./rtcpc":29,"./sdp":30}],29:[function(require,module,exports){
+},{"../errors":14,"../log":17,"../util":35,"./rtcpc":29,"./sdp":30}],29:[function(require,module,exports){
 (function (global){(function (){
 "use strict";
 /**
@@ -8380,7 +8963,7 @@ function promisifySet(fn, ctx) {
 exports.default = RTCPC;
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../log":17,"../util":37,"./sdp":30,"rtcpeerconnection-shim":46}],30:[function(require,module,exports){
+},{"../log":17,"../util":35,"./sdp":30,"rtcpeerconnection-shim":44}],30:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setMaxAverageBitrate = exports.setIceAggressiveNomination = exports.setCodecPreferences = exports.getPreferredCodecInfo = void 0;
@@ -8551,7 +9134,7 @@ function getPayloadTypesInMediaSection(section) {
     return matches.slice(1).map(function (match) { return parseInt(match, 10); });
 }
 
-},{"../util":37}],31:[function(require,module,exports){
+},{"../util":35}],31:[function(require,module,exports){
 "use strict";
 var __spreadArrays = (this && this.__spreadArrays) || function () {
     for (var s = 0, i = 0, il = arguments.length; i < il; i++) s += arguments[i].length;
@@ -8771,57 +9354,6 @@ function createRTCSample(statsReport) {
 
 },{"../errors":14,"./mockrtcstatsreport":26}],32:[function(require,module,exports){
 "use strict";
-/**
- * @packageDocumentation
- * @module Voice
- * @internalapi
- */
-// @ts-nocheck
-Object.defineProperty(exports, "__esModule", { value: true });
-var events_1 = require("events");
-function EventTarget() {
-    Object.defineProperties(this, {
-        _eventEmitter: { value: new events_1.EventEmitter() },
-        _handlers: { value: {} },
-    });
-}
-EventTarget.prototype.dispatchEvent = function dispatchEvent(event) {
-    return this._eventEmitter.emit(event.type, event);
-};
-EventTarget.prototype.addEventListener = function addEventListener() {
-    var _a;
-    return (_a = this._eventEmitter).addListener.apply(_a, arguments);
-};
-EventTarget.prototype.removeEventListener = function removeEventListener() {
-    var _a;
-    return (_a = this._eventEmitter).removeListener.apply(_a, arguments);
-};
-EventTarget.prototype._defineEventHandler = function _defineEventHandler(eventName) {
-    var self = this;
-    Object.defineProperty(this, "on" + eventName, {
-        get: function () {
-            return self._handlers[eventName];
-        },
-        set: function (newHandler) {
-            var oldHandler = self._handlers[eventName];
-            if (oldHandler
-                && (typeof newHandler === 'function'
-                    || typeof newHandler === 'undefined'
-                    || newHandler === null)) {
-                self._handlers[eventName] = null;
-                self.removeEventListener(eventName, oldHandler);
-            }
-            if (typeof newHandler === 'function') {
-                self._handlers[eventName] = newHandler;
-                self.addEventListener(eventName, newHandler);
-            }
-        },
-    });
-};
-exports.default = EventTarget;
-
-},{"events":40}],33:[function(require,module,exports){
-"use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
  * @packageDocumentation
@@ -8842,188 +9374,7 @@ var MediaDeviceInfoShim = /** @class */ (function () {
 }());
 exports.default = MediaDeviceInfoShim;
 
-},{}],34:[function(require,module,exports){
-"use strict";
-/**
- * @packageDocumentation
- * @module Voice
- * @internalapi
- */
-// @ts-nocheck
-var __extends = (this && this.__extends) || (function () {
-    var extendStatics = function (d, b) {
-        extendStatics = Object.setPrototypeOf ||
-            ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
-            function (d, b) { for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p]; };
-        return extendStatics(d, b);
-    };
-    return function (d, b) {
-        extendStatics(d, b);
-        function __() { this.constructor = d; }
-        d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
-    };
-})();
-Object.defineProperty(exports, "__esModule", { value: true });
-var eventtarget_1 = require("./eventtarget");
-var POLL_INTERVAL_MS = 500;
-var nativeMediaDevices = null;
-/**
- * Make a custom MediaDevices object, and proxy through existing functionality. If
- *   devicechange is present, we simply reemit the event. If not, we will do the
- *   detection ourselves and fire the event when necessary. The same logic exists
- *   for deviceinfochange for consistency, however deviceinfochange is our own event
- *   so it is unlikely that it will ever be native. The w3c spec for devicechange
- *   is unclear as to whether MediaDeviceInfo changes (such as label) will
- *   trigger the devicechange event. We have an open question on this here:
- *   https://bugs.chromium.org/p/chromium/issues/detail?id=585096
- */
-var MediaDevicesShim = /** @class */ (function (_super) {
-    __extends(MediaDevicesShim, _super);
-    function MediaDevicesShim() {
-        var _this = _super.call(this) || this;
-        _this._defineEventHandler('devicechange');
-        _this._defineEventHandler('deviceinfochange');
-        var knownDevices = [];
-        Object.defineProperties(_this, {
-            _deviceChangeIsNative: { value: reemitNativeEvent(_this, 'devicechange') },
-            _deviceInfoChangeIsNative: { value: reemitNativeEvent(_this, 'deviceinfochange') },
-            _knownDevices: { value: knownDevices },
-            _pollInterval: {
-                value: null,
-                writable: true,
-            },
-        });
-        if (typeof nativeMediaDevices.enumerateDevices === 'function') {
-            nativeMediaDevices.enumerateDevices().then(function (devices) {
-                devices.sort(sortDevicesById).forEach(function (d) { return knownDevices.push(d); });
-            });
-        }
-        _this._eventEmitter.on('newListener', function maybeStartPolling(eventName) {
-            if (eventName !== 'devicechange' && eventName !== 'deviceinfochange') {
-                return;
-            }
-            // TODO: Remove polling in the next major release.
-            this._pollInterval = this._pollInterval
-                || setInterval(sampleDevices.bind(null, this), POLL_INTERVAL_MS);
-        }.bind(_this));
-        _this._eventEmitter.on('removeListener', function maybeStopPolling() {
-            if (this._pollInterval && !hasChangeListeners(this)) {
-                clearInterval(this._pollInterval);
-                this._pollInterval = null;
-            }
-        }.bind(_this));
-        return _this;
-    }
-    return MediaDevicesShim;
-}(eventtarget_1.default));
-MediaDevicesShim.prototype.enumerateDevices = function enumerateDevices() {
-    if (nativeMediaDevices && typeof nativeMediaDevices.enumerateDevices === 'function') {
-        return nativeMediaDevices.enumerateDevices.apply(nativeMediaDevices, arguments);
-    }
-    return null;
-};
-MediaDevicesShim.prototype.getUserMedia = function getUserMedia() {
-    return nativeMediaDevices.getUserMedia.apply(nativeMediaDevices, arguments);
-};
-function deviceInfosHaveChanged(newDevices, oldDevices) {
-    newDevices = newDevices.filter(function (d) { return d.kind === 'audioinput' || d.kind === 'audiooutput'; });
-    oldDevices = oldDevices.filter(function (d) { return d.kind === 'audioinput' || d.kind === 'audiooutput'; });
-    // On certain browsers, we cannot use deviceId as a key for comparison.
-    // It's missing along with the device label if the customer has not granted permission.
-    // The following checks whether some old devices have empty labels and if they are now available.
-    // This means, the user has granted permissions and the device info have changed.
-    if (oldDevices.some(function (d) { return !d.deviceId; }) &&
-        newDevices.some(function (d) { return !!d.deviceId; })) {
-        return true;
-    }
-    // Use both deviceId and "kind" to create a unique key
-    // since deviceId is not unique across different kinds of devices.
-    var oldLabels = oldDevices.reduce(function (map, device) {
-        return map.set(device.deviceId + "-" + device.kind, device.label);
-    }, new Map());
-    return newDevices.some(function (device) {
-        var oldLabel = oldLabels.get(device.deviceId + "-" + device.kind);
-        return typeof oldLabel !== 'undefined' && oldLabel !== device.label;
-    });
-}
-function devicesHaveChanged(newDevices, oldDevices) {
-    return newDevices.length !== oldDevices.length
-        || propertyHasChanged('deviceId', newDevices, oldDevices);
-}
-function hasChangeListeners(mediaDevices) {
-    return ['devicechange', 'deviceinfochange'].reduce(function (count, event) { return count + mediaDevices._eventEmitter.listenerCount(event); }, 0) > 0;
-}
-/**
- * Sample the current set of devices and emit devicechange event if a device has been
- *   added or removed, and deviceinfochange if a device's label has changed.
- * @param {MediaDevicesShim} mediaDevices
- * @private
- */
-function sampleDevices(mediaDevices) {
-    nativeMediaDevices.enumerateDevices().then(function (newDevices) {
-        var knownDevices = mediaDevices._knownDevices;
-        var oldDevices = knownDevices.slice();
-        // Replace known devices in-place
-        [].splice.apply(knownDevices, [0, knownDevices.length]
-            .concat(newDevices.sort(sortDevicesById)));
-        if (!mediaDevices._deviceChangeIsNative
-            && devicesHaveChanged(knownDevices, oldDevices)) {
-            mediaDevices.dispatchEvent(new Event('devicechange'));
-        }
-        if (!mediaDevices._deviceInfoChangeIsNative
-            && deviceInfosHaveChanged(knownDevices, oldDevices)) {
-            mediaDevices.dispatchEvent(new Event('deviceinfochange'));
-        }
-    });
-}
-/**
- * Accepts two sorted arrays and the name of a property to compare on objects from each.
- *   Arrays should also be of the same length.
- * @param {string} propertyName - Name of the property to compare on each object
- * @param {Array<Object>} as - The left-side array of objects to compare.
- * @param {Array<Object>} bs - The right-side array of objects to compare.
- * @private
- * @returns {boolean} True if the property of any object in array A is different than
- *   the same property of its corresponding object in array B.
- */
-function propertyHasChanged(propertyName, as, bs) {
-    return as.some(function (a, i) { return a[propertyName] !== bs[i][propertyName]; });
-}
-/**
- * Re-emit the native event, if the native mediaDevices has the corresponding property.
- * @param {MediaDevicesShim} mediaDevices
- * @param {string} eventName - Name of the event
- * @private
- * @returns {boolean} Whether the native mediaDevice had the corresponding property
- */
-function reemitNativeEvent(mediaDevices, eventName) {
-    var methodName = "on" + eventName;
-    function dispatchEvent(event) {
-        mediaDevices.dispatchEvent(event);
-    }
-    if (methodName in nativeMediaDevices) {
-        // Use addEventListener if it's available so we don't stomp on any other listeners
-        // for this event. Currently, navigator.mediaDevices.addEventListener does not exist in Safari.
-        if ('addEventListener' in nativeMediaDevices) {
-            nativeMediaDevices.addEventListener(eventName, dispatchEvent);
-        }
-        else {
-            nativeMediaDevices[methodName] = dispatchEvent;
-        }
-        return true;
-    }
-    return false;
-}
-function sortDevicesById(a, b) {
-    return a.deviceId < b.deviceId;
-}
-var getMediaDevicesInstance = function () {
-    nativeMediaDevices = typeof navigator !== 'undefined' ? navigator.mediaDevices : null;
-    return nativeMediaDevices ? new MediaDevicesShim() : null;
-};
-exports.default = getMediaDevicesInstance;
-
-},{"./eventtarget":32}],35:[function(require,module,exports){
+},{}],33:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -9235,7 +9586,7 @@ Sound.prototype.play = function play() {
 };
 exports.default = Sound;
 
-},{"./asyncQueue":2,"./audioplayer/audioplayer":4,"./errors":14}],36:[function(require,module,exports){
+},{"./asyncQueue":2,"./audioplayer/audioplayer":4,"./errors":14}],34:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -9721,7 +10072,7 @@ var StatsMonitor = /** @class */ (function (_super) {
 }(events_1.EventEmitter));
 exports.default = StatsMonitor;
 
-},{"./errors":14,"./rtc/mos":27,"./rtc/stats":31,"./util":37,"events":40}],37:[function(require,module,exports){
+},{"./errors":14,"./rtc/mos":27,"./rtc/stats":31,"./util":35,"events":38}],35:[function(require,module,exports){
 (function (global){(function (){
 "use strict";
 /**
@@ -9868,7 +10219,7 @@ var Exception = TwilioException;
 exports.Exception = Exception;
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],38:[function(require,module,exports){
+},{}],36:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -9877,8 +10228,12 @@ exports.Exception = Exception;
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateVoiceEventSid = void 0;
-var md5 = require("md5");
+var md5Lib = require("md5");
 var errors_1 = require("../twilio/errors");
+// If imported as an ESM module, sometimes md5 is available by accessing
+// the "default" property of the imported library.
+// @ts-ignore
+var md5 = typeof md5Lib === 'function' ? md5Lib : md5Lib.default;
 function generateUuid() {
     if (typeof window !== 'object') {
         throw new errors_1.NotSupportedError('This platform is not supported.');
@@ -9905,7 +10260,7 @@ function generateVoiceEventSid() {
 }
 exports.generateVoiceEventSid = generateVoiceEventSid;
 
-},{"../twilio/errors":14,"md5":45}],39:[function(require,module,exports){
+},{"../twilio/errors":14,"md5":43}],37:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -10393,7 +10748,7 @@ var WSTransport = /** @class */ (function (_super) {
 }(events_1.EventEmitter));
 exports.default = WSTransport;
 
-},{"./backoff":7,"./errors":14,"./log":17,"events":40}],40:[function(require,module,exports){
+},{"./backoff":7,"./errors":14,"./log":17,"events":38}],38:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -10918,7 +11273,7 @@ function functionBindPolyfill(context) {
   };
 }
 
-},{}],41:[function(require,module,exports){
+},{}],39:[function(require,module,exports){
 var charenc = {
   // UTF-8 encoding
   utf8: {
@@ -10953,7 +11308,7 @@ var charenc = {
 
 module.exports = charenc;
 
-},{}],42:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 (function() {
   var base64map
       = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
@@ -11051,7 +11406,7 @@ module.exports = charenc;
   module.exports = crypt;
 })();
 
-},{}],43:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 /*!
  * Determine if an object is a Buffer
  *
@@ -11074,7 +11429,7 @@ function isSlowBuffer (obj) {
   return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
 }
 
-},{}],44:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 /*
 * loglevel - https://github.com/pimterry/loglevel
 *
@@ -11344,7 +11699,7 @@ function isSlowBuffer (obj) {
     return defaultLogger;
 }));
 
-},{}],45:[function(require,module,exports){
+},{}],43:[function(require,module,exports){
 (function(){
   var crypt = require('crypt'),
       utf8 = require('charenc').utf8,
@@ -11506,7 +11861,7 @@ function isSlowBuffer (obj) {
 
 })();
 
-},{"charenc":41,"crypt":42,"is-buffer":43}],46:[function(require,module,exports){
+},{"charenc":39,"crypt":40,"is-buffer":41}],44:[function(require,module,exports){
 /*
  *  Copyright (c) 2017 The WebRTC project authors. All Rights Reserved.
  *
@@ -13202,7 +13557,7 @@ module.exports = function(window, edgeVersion) {
   return RTCPeerConnection;
 };
 
-},{"sdp":47}],47:[function(require,module,exports){
+},{"sdp":45}],45:[function(require,module,exports){
 /* eslint-env node */
 'use strict';
 
