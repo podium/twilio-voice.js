@@ -2443,6 +2443,9 @@ var Call = /** @class */ (function (_super) {
             _this._publisher.info('get-user-media', 'succeeded', {
                 data: { audioConstraints: audioConstraints },
             }, _this);
+            if (_this._options.onGetUserMedia) {
+                _this._options.onGetUserMedia();
+            }
             connect();
         }, function (error) {
             var twilioError;
@@ -3258,6 +3261,16 @@ var Device = /** @class */ (function (_super) {
             return payload;
         };
         /**
+         * Called after a successful getUserMedia call
+         */
+        _this._onGetUserMedia = function () {
+            var _a;
+            (_a = _this._audio) === null || _a === void 0 ? void 0 : _a._updateAvailableDevices().catch(function (error) {
+                // Ignore error, we don't want to break the call flow
+                _this._log.warn('Unable to updateAvailableDevices after gUM call', error);
+            });
+        };
+        /**
          * Called when a 'close' event is received from the signaling stream.
          */
         _this._onSignalingClose = function () {
@@ -4060,8 +4073,8 @@ var Device = /** @class */ (function (_super) {
                                 if (!_this._activeCall || _this._activeCall === currentCall) {
                                     return;
                                 }
-                                _this._activeCall.disconnect();
-                                _this._removeCall(_this._activeCall);
+                                // this._activeCall.disconnect();
+                                // this._removeCall(this._activeCall);
                             },
                             codecPreferences: this._options.codecPreferences,
                             customSounds: this._options.sounds,
@@ -4072,6 +4085,7 @@ var Device = /** @class */ (function (_super) {
                             getInputStream: function () { return _this._options.fileInputStream || _this._callInputStream; },
                             getSinkIds: function () { return _this._callSinkIds; },
                             maxAverageBitrate: this._options.maxAverageBitrate,
+                            onGetUserMedia: function () { return _this._onGetUserMedia(); },
                             preflight: this._options.preflight,
                             rtcConstraints: this._options.rtcConstraints,
                             shouldPlayDisconnect: function () { var _a; return (_a = _this._audio) === null || _a === void 0 ? void 0 : _a.disconnect(); },

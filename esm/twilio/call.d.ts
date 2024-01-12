@@ -622,6 +622,10 @@ declare namespace Call {
          */
         offerSdp?: string | null;
         /**
+         * Called after a successful getUserMedia call
+         */
+        onGetUserMedia?: () => void;
+        /**
          * Whether this is a preflight call or not
          */
         preflight?: boolean;

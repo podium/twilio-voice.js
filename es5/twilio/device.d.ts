@@ -410,6 +410,10 @@ declare class Device extends EventEmitter {
      */
     private _maybeStopIncomingSound;
     /**
+     * Called after a successful getUserMedia call
+     */
+    private _onGetUserMedia;
+    /**
      * Called when a 'close' event is received from the signaling stream.
      */
     private _onSignalingClose;
