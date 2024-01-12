@@ -12,6 +12,10 @@ export default class OutputDeviceCollection {
      */
     private _activeDevices;
     /**
+     * An instance of Logger to use.
+     */
+    private _log;
+    /**
      * @private
      */
     constructor(_name: string, _availableDevices: Map<string, MediaDeviceInfo>, _beforeChange: (name: string, devices: string[]) => Promise<void>, _isSupported: boolean);

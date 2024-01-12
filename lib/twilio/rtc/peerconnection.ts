@@ -29,16 +29,16 @@ const VOLUME_INTERVAL_MS = 50;
  * @return {PeerConnection}
  * @constructor
  */
-function PeerConnection(audioHelper, pstream, getUserMedia, options) {
-  if (!audioHelper || !pstream || !getUserMedia) {
-    throw new InvalidArgumentError('Audiohelper, pstream and getUserMedia are required arguments');
+function PeerConnection(audioHelper, pstream, options) {
+  if (!audioHelper || !pstream) {
+    throw new InvalidArgumentError('Audiohelper, and pstream are required arguments');
   }
 
   if (!(this instanceof PeerConnection)) {
-    return new PeerConnection(audioHelper, pstream, getUserMedia, options);
+    return new PeerConnection(audioHelper, pstream, options);
   }
 
-  this._log = Log.getInstance();
+  this._log = new Log('PeerConnection');
 
   function noop() {
     this._log.warn('Unexpected noop call in peerconnection');
@@ -68,7 +68,6 @@ function PeerConnection(audioHelper, pstream, getUserMedia, options) {
   this.status = 'connecting';
   this.callSid = null;
   this.isMuted = false;
-  this.getUserMedia = getUserMedia;
 
   const AudioContext = typeof window !== 'undefined'
     && (window.AudioContext || window.webkitAudioContext);
@@ -78,6 +77,7 @@ function PeerConnection(audioHelper, pstream, getUserMedia, options) {
   // after 6 instances an exception is thrown. Refer https://www.w3.org/2011/audio/track/issues/3.
   // In order to get around it, we are re-using the Device's AudioContext.
   this._audioContext = AudioContext && audioHelper._audioContext;
+  this._audioHelper = audioHelper;
   this._hasIceCandidates = false;
   this._hasIceGatheringFailures = false;
   this._iceGatheringTimeoutId = null;
@@ -114,8 +114,8 @@ PeerConnection.prototype.uri = function() {
  *   and will therefore be managed and destroyed internally.
  * @param {MediaStreamConstraints} constraints
  */
-PeerConnection.prototype.openWithConstraints = function(constraints) {
-  return this.getUserMedia({ audio: constraints })
+PeerConnection.prototype.openDefaultDeviceWithConstraints = function(constraints) {
+  return this._audioHelper._openDefaultDeviceWithConstraints(constraints)
     .then(this._setInputTracksFromStream.bind(this, false));
 };
 
@@ -207,24 +207,14 @@ PeerConnection.prototype._startPollingVolume = function() {
   }, VOLUME_INTERVAL_MS);
 };
 
-PeerConnection.prototype._stopStream = function _stopStream(stream) {
+PeerConnection.prototype._stopStream = function _stopStream() {
   // We shouldn't stop the tracks if they were not created inside
   //   this PeerConnection.
   if (!this._shouldManageStream) {
     return;
   }
 
-  if (typeof MediaStreamTrack.prototype.stop === 'function') {
-    const audioTracks = typeof stream.getAudioTracks === 'function'
-      ? stream.getAudioTracks() : stream.audioTracks;
-    audioTracks.forEach(track => {
-      track.stop();
-    });
-  } else {
-    // NOTE(mroberts): This is just a fallback to any ancient browsers that may
-    // not implement MediaStreamTrack.stop.
-    stream.stop();
-  }
+  this._audioHelper._stopDefaultInputDeviceStream();
 };
 
 /**
@@ -310,7 +300,7 @@ PeerConnection.prototype._setInputTracksForPlanB = function(shouldClone, newStre
     //   as of Chrome 61. https://bugs.chromium.org/p/chromium/issues/detail?id=770908
     this.stream = shouldClone ? cloneStream(newStream) : newStream;
   } else {
-    this._stopStream(localStream);
+    this._stopStream();
 
     removeStream(this.version.pc, localStream);
     localStream.getAudioTracks().forEach(localStream.removeTrack, localStream);
@@ -370,7 +360,7 @@ PeerConnection.prototype._setInputTracksForUnifiedPlan = function(shouldClone, n
     // If the call was started with gUM, and we are now replacing that track with an
     // external stream's tracks, we should stop the old managed track.
     if (this._shouldManageStream) {
-      this._stopStream(localStream);
+      this._stopStream();
     }
 
     if (!this._sender) {
@@ -379,6 +369,7 @@ PeerConnection.prototype._setInputTracksForUnifiedPlan = function(shouldClone, n
 
     return this._sender.replaceTrack(newStream.getAudioTracks()[0]).then(() => {
       this._updateInputStreamSource(newStream);
+      this.stream = shouldClone ? cloneStream(newStream) : newStream;
       return getStreamPromise();
     });
   }
@@ -395,7 +386,7 @@ PeerConnection.prototype._onInputDevicesChanged = function() {
   // We only want to act if we manage the stream in PeerConnection (It was created
   // here, rather than passed in.)
   if (activeInputWasLost && this._shouldManageStream) {
-    this.openWithConstraints(true);
+    this.openDefaultDeviceWithConstraints({ audio: true });
   }
 };
 
@@ -432,12 +423,12 @@ PeerConnection.prototype._onMediaConnectionStateChange = function(newState) {
       break;
     case 'disconnected':
       message = 'ICE liveliness check failed. May be having trouble connecting to Twilio';
-      this._log.info(message);
+      this._log.warn(message);
       this.ondisconnected(message);
       break;
     case 'failed':
       message = 'Connection with Twilio was interrupted.';
-      this._log.info(message);
+      this._log.warn(message);
       this.onfailed(message);
       break;
   }
@@ -856,7 +847,7 @@ PeerConnection.prototype.iceRestart = function() {
       if (!payload.sdp || this.version.pc.signalingState !== 'have-local-offer') {
         const message = 'Invalid state or param during ICE Restart:'
           + `hasSdp:${!!payload.sdp}, signalingState:${this.version.pc.signalingState}`;
-        this._log.info(message);
+        this._log.warn(message);
         return;
       }
 
@@ -865,7 +856,7 @@ PeerConnection.prototype.iceRestart = function() {
       if (this.status !== 'closed') {
         this.version.processAnswer(this.codecPreferences, sdp, null, err => {
           const message = err && err.message ? err.message : err;
-          this._log.info(`Failed to process answer during ICE Restart. Error: ${message}`);
+          this._log.error(`Failed to process answer during ICE Restart. Error: ${message}`);
         });
       }
     };
@@ -881,7 +872,7 @@ PeerConnection.prototype.iceRestart = function() {
 
   }).catch((err) => {
     const message = err && err.message ? err.message : err;
-    this._log.info(`Failed to createOffer during ICE Restart. Error: ${message}`);
+    this._log.error(`Failed to createOffer during ICE Restart. Error: ${message}`);
     // CreateOffer failures doesn't transition ice state to failed
     // We need trigger it so it can be picked up by retries
     this.onfailed(message);
@@ -979,7 +970,7 @@ PeerConnection.prototype.close = function() {
   }
   if (this.stream) {
     this.mute(false);
-    this._stopStream(this.stream);
+    this._stopStream();
   }
   this.stream = null;
   this._removeReconnectionListeners();
@@ -1048,7 +1039,7 @@ PeerConnection.prototype.getOrCreateDTMFSender = function getOrCreateDTMFSender(
   const self = this;
   const pc = this.version.pc;
   if (!pc) {
-    this._log.info('No RTCPeerConnection available to call createDTMFSender on');
+    this._log.warn('No RTCPeerConnection available to call createDTMFSender on');
     return null;
   }
 
@@ -1068,7 +1059,7 @@ PeerConnection.prototype.getOrCreateDTMFSender = function getOrCreateDTMFSender(
     })[0];
 
     if (!track) {
-      this._log.info('No local audio MediaStreamTrack available on the RTCPeerConnection to pass to createDTMFSender');
+      this._log.warn('No local audio MediaStreamTrack available on the RTCPeerConnection to pass to createDTMFSender');
       return null;
     }
 

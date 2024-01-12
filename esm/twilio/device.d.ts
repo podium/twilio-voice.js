@@ -173,6 +173,10 @@ declare class Device extends EventEmitter {
      */
     private _audio;
     /**
+     * The AudioProcessorEventObserver instance to use
+     */
+    private _audioProcessorEventObserver;
+    /**
      * {@link Device._confirmClose} bound to the specific {@link Device} instance.
      */
     private _boundConfirmClose;
@@ -392,6 +396,10 @@ declare class Device extends EventEmitter {
      */
     private _findCall;
     /**
+     * Utility function to log device options
+     */
+    private _logOptions;
+    /**
      * Create a new {@link Call}.
      * @param twimlParams - A flat object containing key:value pairs to be sent to the TwiML app.
      * @param options - Options to be used to instantiate the {@link Call}.
@@ -401,10 +409,6 @@ declare class Device extends EventEmitter {
      * Stop the incoming sound if no {@link Call}s remain.
      */
     private _maybeStopIncomingSound;
-    /**
-     * Called after a successful getUserMedia call
-     */
-    private _onGetUserMedia;
     /**
      * Called when a 'close' event is received from the signaling stream.
      */
@@ -451,6 +455,10 @@ declare class Device extends EventEmitter {
      * Set up an audio helper for usage by this {@link Device}.
      */
     private _setupAudioHelper;
+    /**
+     * Setup logger's loglevel
+     */
+    private _setupLoglevel;
     /**
      * Create and set a publisher for the {@link Device} to use.
      */
@@ -683,7 +691,14 @@ declare namespace Device {
          */
         getUserMedia?: any;
         /**
-         * Log level.
+         * Sets the log level.
+         *
+         * Possible values include any of the following numbers:
+         * <br/>0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error, 5 = silent
+         *
+         * Or any of the following strings:
+         * <br/>'trace', 'debug', 'info', 'warn', 'error', 'silent'
+         * <br/>'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'
          */
         logLevel?: LogLevelDesc;
         /**

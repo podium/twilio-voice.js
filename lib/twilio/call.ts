@@ -198,7 +198,7 @@ class Call extends EventEmitter {
   /**
    * An instance of Logger to use.
    */
-  private _log: Log = Log.getInstance();
+  private _log: Log = new Log('Call');
 
   /**
    * The MediaHandler (Twilio PeerConnection) this {@link Call} is using for
@@ -379,7 +379,7 @@ class Call extends EventEmitter {
     });
 
     this._mediaHandler = new (this._options.MediaHandler)
-      (config.audioHelper, config.pstream, config.getUserMedia, {
+      (config.audioHelper, config.pstream, {
         RTCPeerConnection: this._options.RTCPeerConnection,
         codecPreferences: this._options.codecPreferences,
         dscp: this._options.dscp,
@@ -399,7 +399,7 @@ class Call extends EventEmitter {
     });
 
     this._mediaHandler.onaudio = (remoteAudio: typeof Audio) => {
-      this._log.info('Remote audio created');
+      this._log.debug('#audio');
       this.emit('audio', remoteAudio);
     };
 
@@ -463,10 +463,11 @@ class Call extends EventEmitter {
     };
 
     this._mediaHandler.ondisconnected = (msg: string): void => {
-      this._log.info(msg);
+      this._log.warn(msg);
       this._publisher.warn('network-quality-warning-raised', 'ice-connectivity-lost', {
         message: msg,
       }, this);
+      this._log.debug('#warning', 'ice-connectivity-lost');
       this.emit('warning', 'ice-connectivity-lost');
 
       this._onMediaFailure(Call.MediaFailure.ConnectionDisconnected);
@@ -488,6 +489,7 @@ class Call extends EventEmitter {
       this._publisher.info('network-quality-warning-cleared', 'ice-connectivity-lost', {
         message: msg,
       }, this);
+      this._log.debug('#warning-cleared', 'ice-connectivity-lost');
       this.emit('warning-cleared', 'ice-connectivity-lost');
       this._onMediaReconnected();
     };
@@ -499,6 +501,7 @@ class Call extends EventEmitter {
 
       const error = e.info.twilioError || new GeneralErrors.UnknownError(e.info.message);
       this._log.error('Received an error from MediaStream:', e);
+      this._log.debug('#error', error);
       this.emit('error', error);
     };
 
@@ -514,7 +517,7 @@ class Call extends EventEmitter {
       if (this._status === Call.State.Open || this._status === Call.State.Reconnecting) {
         return;
       } else if (this._status === Call.State.Ringing || this._status === Call.State.Connecting) {
-        this.mute(false);
+        this.mute(this._mediaHandler.isMuted);
         this._mediaStatus = Call.State.Open;
         this._maybeTransitionToOpen();
       } else {
@@ -539,6 +542,7 @@ class Call extends EventEmitter {
 
       if (!this._isCancelled && !this._isRejected) {
         // tslint:disable no-console
+        this._log.debug('#disconnect');
         this.emit('disconnect', this);
       }
     };
@@ -593,6 +597,7 @@ class Call extends EventEmitter {
     if (this._status !== Call.State.Pending) {
       return;
     }
+    this._log.debug('.accept', options);
 
     options = options || { };
     const rtcConfiguration = options.rtcConfiguration || this._options.rtcConfiguration;
@@ -664,7 +669,7 @@ class Call extends EventEmitter {
 
     const promise = inputStream
       ? this._mediaHandler.setInputTracksFromStream(inputStream)
-      : this._mediaHandler.openWithConstraints(audioConstraints);
+      : this._mediaHandler.openDefaultDeviceWithConstraints(audioConstraints);
 
     promise.then(() => {
       this._publisher.info('get-user-media', 'succeeded', {
@@ -700,6 +705,7 @@ class Call extends EventEmitter {
       }
 
       this._disconnect();
+      this._log.debug('#error', error);
       this.emit('error', twilioError);
     });
   }
@@ -708,6 +714,7 @@ class Call extends EventEmitter {
    * Disconnect from the {@link Call}.
    */
   disconnect(): void {
+    this._log.debug('.disconnect');
     this._disconnect();
   }
 
@@ -732,6 +739,7 @@ class Call extends EventEmitter {
     if (this._status !== Call.State.Pending) {
       return;
     }
+    this._log.debug('.ignore');
 
     this._status = Call.State.Closed;
     this._mediaHandler.ignore(this.parameters.CallSid);
@@ -754,12 +762,14 @@ class Call extends EventEmitter {
    * @param shouldMute - Whether the incoming audio should be muted. Defaults to true.
    */
   mute(shouldMute: boolean = true): void {
+    this._log.debug('.mute', shouldMute);
     const wasMuted = this._mediaHandler.isMuted;
     this._mediaHandler.mute(shouldMute);
 
     const isMuted = this._mediaHandler.isMuted;
     if (wasMuted !== isMuted) {
       this._publisher.info('connection', isMuted ? 'muted' : 'unmuted', null, this);
+      this._log.debug('#mute', isMuted);
       this.emit('mute', isMuted, this);
     }
   }
@@ -801,6 +811,7 @@ class Call extends EventEmitter {
     if (this._status !== Call.State.Pending) {
       return;
     }
+    this._log.debug('.reject');
 
     this._isRejected = true;
     this._pstream.reject(this.parameters.CallSid);
@@ -809,6 +820,7 @@ class Call extends EventEmitter {
     this._cleanupEventListeners();
     this._mediaHandler.close();
     this._status = Call.State.Closed;
+    this._log.debug('#reject');
     this.emit('reject');
   }
 
@@ -817,6 +829,7 @@ class Call extends EventEmitter {
    * @param digits
    */
   sendDigits(digits: string): void {
+    this._log.debug('.sendDigits', digits);
     if (digits.match(/[^0-9*#w]/)) {
       throw new InvalidArgumentError('Illegal character passed into sendDigits');
     }
@@ -878,6 +891,7 @@ class Call extends EventEmitter {
       this._pstream.dtmf(this.parameters.CallSid, digits);
     } else {
       const error = new GeneralErrors.ConnectionError('Could not send DTMF: Signaling channel is disconnected');
+      this._log.debug('#error', error);
       this.emit('error', error);
     }
   }
@@ -890,6 +904,7 @@ class Call extends EventEmitter {
    * @returns A voice event sid that uniquely identifies the message that was sent.
    */
   sendMessage(message: Call.Message): string {
+    this._log.debug('.sendMessage', JSON.stringify(message));
     const { content, contentType, messageType } = message;
 
     if (typeof content === 'undefined' || content === null) {
@@ -1091,6 +1106,7 @@ class Call extends EventEmitter {
 
     if (warningName !== 'constant-audio-output-level') {
       const emitName = wasCleared ? 'warning-cleared' : 'warning';
+      this._log.debug(`#${emitName}`, warningName);
       this.emit(emitName, warningName, warningData && !wasCleared ? warningData : null);
     }
   }
@@ -1107,6 +1123,7 @@ class Call extends EventEmitter {
         this._status = Call.State.Open;
         if (!this._wasConnected) {
           this._wasConnected = true;
+          this._log.debug('#accept');
           this.emit('accept', this);
         }
       }
@@ -1164,6 +1181,7 @@ class Call extends EventEmitter {
       this._mediaHandler.close();
 
       this._status = Call.State.Closed;
+      this._log.debug('#cancel');
       this.emit('cancel');
       this._pstream.removeListener('cancel', this._onCancel);
     }
@@ -1221,6 +1239,7 @@ class Call extends EventEmitter {
             'Error sent from gateway in HANGUP',
           );
       this._log.error('Received an error from the gateway:', error);
+      this._log.debug('#error', error);
       this.emit('error', error);
     }
     this._shouldSendHangup = false;
@@ -1257,7 +1276,7 @@ class Call extends EventEmitter {
 
         // We already exceeded max retry time.
         if (Date.now() - this._mediaReconnectStartTime > BACKOFF_CONFIG.max) {
-          this._log.info('Exceeded max ICE retries');
+          this._log.warn('Exceeded max ICE retries');
           return this._mediaHandler.onerror(MEDIA_DISCONNECT_ERROR);
         }
 
@@ -1298,6 +1317,7 @@ class Call extends EventEmitter {
       this._mediaReconnectBackoff.reset();
       this._mediaReconnectBackoff.backoff();
 
+      this._log.debug('#reconnecting');
       this.emit('reconnecting', mediaReconnectionError);
     }
   }
@@ -1316,6 +1336,7 @@ class Call extends EventEmitter {
 
     if (this._signalingStatus === Call.State.Open) {
       this._publisher.info('connection', 'reconnected', null, this);
+      this._log.debug('#reconnected');
       this.emit('reconnected');
       this._status = Call.State.Open;
     }
@@ -1333,13 +1354,14 @@ class Call extends EventEmitter {
       this._log.warn(`Received a message from a different callsid: ${callsid}`);
       return;
     }
-
-    this.emit('messageReceived', {
+    const data = {
       content,
       contentType: contenttype,
       messageType: messagetype,
       voiceEventSid: voiceeventsid,
-    });
+    };
+    this._log.debug('#messageReceived', JSON.stringify(data));
+    this.emit('messageReceived', data);
   }
 
   /**
@@ -1354,6 +1376,7 @@ class Call extends EventEmitter {
     }
     const message = this._messages.get(voiceEventSid);
     this._messages.delete(voiceEventSid);
+    this._log.debug('#messageSent', JSON.stringify(message));
     this.emit('messageSent', message);
   }
 
@@ -1372,6 +1395,7 @@ class Call extends EventEmitter {
     const hasEarlyMedia = !!payload.sdp;
     this._status = Call.State.Ringing;
     this._publisher.info('connection', 'outgoing-ringing', { hasEarlyMedia }, this);
+    this._log.debug('#ringing');
     this.emit('ringing', hasEarlyMedia);
   }
 
@@ -1426,6 +1450,7 @@ class Call extends EventEmitter {
 
     if (this._mediaStatus === Call.State.Open) {
       this._publisher.info('connection', 'reconnected', null, this);
+      this._log.debug('#reconnected');
       this.emit('reconnected');
       this._status = Call.State.Open;
     }
@@ -1437,10 +1462,12 @@ class Call extends EventEmitter {
    */
   private _onTransportClose = (): void => {
     this._log.error('Received transportClose from pstream');
+    this._log.debug('#transportClose');
     this.emit('transportClose');
     if (this._signalingReconnectToken) {
       this._status = Call.State.Reconnecting;
       this._signalingStatus = Call.State.Reconnecting;
+      this._log.debug('#reconnecting');
       this.emit('reconnecting', new SignalingErrors.ConnectionDisconnected());
     } else {
       this._status = Call.State.Closed;
@@ -1792,11 +1819,6 @@ namespace Call {
      * An AudioHelper instance to be used for input/output devices.
      */
     audioHelper: IAudioHelper;
-
-    /**
-     * A method to use for getUserMedia.
-     */
-    getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
 
     /**
      * Whether or not the browser uses unified-plan SDP by default.

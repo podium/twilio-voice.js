@@ -281,6 +281,20 @@ describe('Device', function () {
           sinon.assert.calledOnce(pstream.destroy);
         });
 
+        it('should destroy audio helper', () => {
+          const stub = sinon.stub();
+          device['_audio']!['_destroy'] = stub;
+          device.destroy();
+          sinon.assert.calledOnce(stub);
+        });
+
+        it('should destroy audioProcessorEventObserver', () => {
+          const stub = sinon.stub();
+          device['_audioProcessorEventObserver']!.destroy = stub;
+          device.destroy();
+          sinon.assert.calledOnce(stub);
+        });
+
         it('should stop sending registrations', () => {
           pstream.register.resetHistory();
 
@@ -434,7 +448,7 @@ describe('Device', function () {
         });
 
         it('should re-initialize publisher with the correct host', () => {
-          pstream.emit('connected', { home: 'foo' });
+          pstream.emit('connected', { home: 'foo'});
           device.updateOptions({ appName: 'bar' });
           assert.equal(Publisher.args[1][2].host, 'eventgw.foo.twilio.com');
         });
@@ -481,10 +495,18 @@ describe('Device', function () {
           });
 
           Object.entries(LogLevels).forEach(([level, number]) => {
-            it(`should set log level to '${level}'`, () => {
+            level = level.toLowerCase();
+
+            it(`should set log level to '${number}'`, () => {
               device['_log'].setDefaultLevel = setDefaultLevelStub;
               device.updateOptions({ logLevel: number });
               sinon.assert.calledWith(setDefaultLevelStub, number);
+            });
+
+            it(`should set log level to '${level}'`, () => {
+              device['_log'].setDefaultLevel = setDefaultLevelStub;
+              device.updateOptions({ logLevel: level as any });
+              sinon.assert.calledWith(setDefaultLevelStub, level);
             });
           });
         });
@@ -533,6 +555,22 @@ describe('Device', function () {
           const spy = device.register = sinon.spy(device.register);
           pstream.emit('offline');
           await clock.tickAsync(0);
+          pstream.emit('connected', { region: 'EU_IRELAND' });
+          await clock.tickAsync(0);
+
+          sinon.assert.calledOnce(spy);
+        });
+
+        it('should not attempt a re-register twice', async () => {
+          await registerDevice();
+
+          const spy = device.register = sinon.spy(device.register);
+          pstream.emit('offline');
+          await clock.tickAsync(0);
+
+          // Register manually. This is usually triggered when token is also updated
+          await registerDevice();
+
           pstream.emit('connected', { region: 'EU_IRELAND' });
           await clock.tickAsync(0);
 
@@ -1404,10 +1442,30 @@ describe('Device', function () {
           });
 
           describe('._setupAudioHelper()', () => {
-            it('should destroy an existing audio helper', () => {
-              const spy = device['_destroyAudioHelper'] = sinon.spy(device['_destroyAudioHelper']);
+            it('should create audioProcessorEventObserver once', () => {
+              const audioProcessorEventObserver = device['_audioProcessorEventObserver'];
               device['_setupAudioHelper']();
-              sinon.assert.calledOnce(spy);
+              assert.strictEqual(device['_audioProcessorEventObserver'], audioProcessorEventObserver);
+            });
+
+            it('should create audioHelper once', () => {
+              const audio = device['_audio'];
+              device['_setupAudioHelper']();
+              assert.strictEqual(device['_audio'], audio);
+            });
+
+            it('should update audioHelper options', () => {
+              const stub = sinon.stub();
+              device['_audio']!['_updateUserOptions'] = stub;
+              device['_options'].enumerateDevices = 'foo';
+              device['_options'].getUserMedia = 'bar';
+              device['_setupAudioHelper']();
+              sinon.assert.calledWith(stub, {
+                audioContext: Device.audioContext,
+                audioProcessorEventObserver: device['_audioProcessorEventObserver'],
+                enumerateDevices: 'foo',
+                getUserMedia: 'bar',
+              })
             });
           });
 

@@ -103,6 +103,10 @@ export declare class PreflightTest extends EventEmitter {
      */
     private _latestSample;
     /**
+     * An instance of Logger to use.
+     */
+    private _log;
+    /**
      * Network related timing measurements for this test
      */
     private _networkTiming;

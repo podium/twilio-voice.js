@@ -7,6 +7,7 @@
 import { EventEmitter } from 'events';
 import { levels as LogLevels, LogLevelDesc } from 'loglevel';
 import AudioHelper from './audiohelper';
+import { AudioProcessorEventObserver } from './audioprocessoreventobserver';
 import Call from './call';
 import * as C from './constants';
 import DialtonePlayer from './dialtonePlayer';
@@ -299,6 +300,11 @@ class Device extends EventEmitter {
   private _audio: AudioHelper | null = null;
 
   /**
+   * The AudioProcessorEventObserver instance to use
+   */
+  private _audioProcessorEventObserver: AudioProcessorEventObserver | null = null;
+
+  /**
    * {@link Device._confirmClose} bound to the specific {@link Device} instance.
    */
   private _boundConfirmClose: typeof Device.prototype._confirmClose;
@@ -371,7 +377,7 @@ class Device extends EventEmitter {
   /**
    * An instance of Logger to use.
    */
-  private _log: Log = Log.getInstance();
+  private _log: Log = new Log('Device');
 
   /**
    * Network related information
@@ -461,6 +467,10 @@ class Device extends EventEmitter {
   constructor(token: string, options: Device.Options = {}) {
     super();
 
+    // Setup loglevel asap to avoid missed logs
+    this._setupLoglevel(options.logLevel);
+    this._logOptions('constructor', options);
+
     this.updateToken(token);
 
     if (isLegacyEdge()) {
@@ -547,7 +557,8 @@ class Device extends EventEmitter {
    * Make an outgoing Call.
    * @param options
    */
-  async connect(options: Device.ConnectOptions = {}): Promise<Call> {
+  async connect(options: Device.ConnectOptions = { }): Promise<Call> {
+    this._log.debug('.connect', JSON.stringify(options && options.params || {}), options);
     this._throwIfDestroyed();
 
     if (this._activeCall) {
@@ -555,7 +566,7 @@ class Device extends EventEmitter {
     }
 
     const activeCall = this._activeCall = await this._makeCall(
-      options.params || {},
+      options.params || { },
       {
         enableImprovedSignalingErrorPrecision:
           !!this._options.enableImprovedSignalingErrorPrecision,
@@ -586,16 +597,14 @@ class Device extends EventEmitter {
    * Destroy the {@link Device}, freeing references to be garbage collected.
    */
   destroy(): void {
+    this._log.debug('.destroy');
     this.disconnectAll();
     this._stopRegistrationTimer();
-
-    if (this._audio) {
-      this._audio._unbind();
-    }
 
     this._destroyStream();
     this._destroyPublisher();
     this._destroyAudioHelper();
+    this._audioProcessorEventObserver?.destroy();
 
     if (this._networkInformation && typeof this._networkInformation.removeEventListener === 'function') {
       this._networkInformation.removeEventListener('change', this._publishNetworkChange);
@@ -615,6 +624,7 @@ class Device extends EventEmitter {
    * Disconnect all {@link Call}s.
    */
   disconnectAll(): void {
+    this._log.debug('.disconnectAll');
     const calls = this._calls.splice(0);
     calls.forEach((call: Call) => call.disconnect());
 
@@ -658,6 +668,7 @@ class Device extends EventEmitter {
    * Register the `Device` to the Twilio backend, allowing it to receive calls.
    */
   async register(): Promise<void> {
+    this._log.debug('.register');
     if (this.state !== Device.State.Unregistered) {
       throw new InvalidStateError(
         `Attempt to register when device is in state "${this.state}". ` +
@@ -665,6 +676,7 @@ class Device extends EventEmitter {
       );
     }
 
+    this._shouldReRegister = false;
     this._setState(Device.State.Registering);
 
     const stream = await (this._streamConnectedPromise || this._setupStream());
@@ -702,6 +714,7 @@ class Device extends EventEmitter {
    * calls.
    */
   async unregister(): Promise<void> {
+    this._log.debug('.unregister');
     if (this.state !== Device.State.Registered) {
       throw new InvalidStateError(
         `Attempt to unregister when device is in state "${this.state}". ` +
@@ -723,7 +736,8 @@ class Device extends EventEmitter {
    * Set the options used within the {@link Device}.
    * @param options
    */
-  updateOptions(options: Device.Options = {}): void {
+  updateOptions(options: Device.Options = { }): void {
+    this._logOptions('updateOptions', options);
     if (this.state === Device.State.Destroyed) {
       throw new InvalidStateError(
         `Attempt to "updateOptions" when device is in state "${this.state}".`,
@@ -758,11 +772,7 @@ class Device extends EventEmitter {
       throw new InvalidStateError('Cannot change Edge while on an active Call');
     }
 
-    this._log.setDefaultLevel(
-      typeof this._options.logLevel === 'number'
-        ? this._options.logLevel
-        : LogLevels.ERROR,
-    );
+    this._setupLoglevel(this._options.logLevel);
 
     if (this._options.dscp) {
       if (!this._options.rtcConstraints) {
@@ -812,6 +822,7 @@ class Device extends EventEmitter {
    * @param token
    */
   updateToken(token: string) {
+    this._log.debug('.updateToken');
     if (this.state === Device.State.Destroyed) {
       throw new InvalidStateError(
         `Attempt to "updateToken" when device is in state "${this.state}".`,
@@ -887,8 +898,7 @@ class Device extends EventEmitter {
    */
   private _destroyAudioHelper() {
     if (!this._audio) { return; }
-
-    this._audio.removeAllListeners();
+    this._audio._destroy();
     this._audio = null;
   }
 
@@ -933,6 +943,50 @@ class Device extends EventEmitter {
   }
 
   /**
+   * Utility function to log device options
+   */
+  private _logOptions(caller: string, options: Device.Options = { }): void {
+    // Selectively log options that users can modify.
+    // Also, convert user overrides.
+    // This prevents potential app crash when calling JSON.stringify
+    // and when sending log strings remotely
+    const userOptions = [
+      'allowIncomingWhileBusy',
+      'appName',
+      'appVersion',
+      'closeProtection',
+      'codecPreferences',
+      'disableAudioContextSounds',
+      'dscp',
+      'edge',
+      'enableImprovedSignalingErrorPrecision',
+      'forceAggressiveIceNomination',
+      'logLevel',
+      'maxAverageBitrate',
+      'maxCallSignalingTimeoutMs',
+      'sounds',
+      'tokenRefreshMs',
+    ];
+    const userOptionOverrides = [
+      'RTCPeerConnection',
+      'enumerateDevices',
+      'getUserMedia',
+    ];
+    if (typeof options === 'object') {
+      const toLog: any = { ...options };
+      Object.keys(toLog).forEach((key: string) => {
+        if (!userOptions.includes(key) && !userOptionOverrides.includes(key)) {
+          delete toLog[key];
+        }
+        if (userOptionOverrides.includes(key)) {
+          toLog[key] = true;
+        }
+      });
+      this._log.debug(`.${caller}`, JSON.stringify(toLog));
+    }
+  }
+
+  /**
    * Create a new {@link Call}.
    * @param twimlParams - A flat object containing key:value pairs to be sent to the TwiML app.
    * @param options - Options to be used to instantiate the {@link Call}.
@@ -944,7 +998,6 @@ class Device extends EventEmitter {
 
     const config: Call.Config = {
       audioHelper: this._audio,
-      getUserMedia: this._options.getUserMedia || getUserMedia,
       isUnifiedPlanDefault: Device._isUnifiedPlanDefault,
       onIgnore: (): void => {
         this._soundcache.get(Device.SoundName.Incoming).stop();
@@ -1131,6 +1184,7 @@ class Device extends EventEmitter {
         const ttlMs: number = payload.token.ttl * 1000;
         const timeoutMs: number = Math.max(0, ttlMs - this._options.tokenRefreshMs);
         this._tokenWillExpireTimeout = setTimeout(() => {
+          this._log.debug('#tokenWillExpire');
           this.emit('tokenWillExpire', this);
           if (this._tokenWillExpireTimeout) {
             clearTimeout(this._tokenWillExpireTimeout);
@@ -1145,7 +1199,7 @@ class Device extends EventEmitter {
       const [preferredURI] = preferredURIs;
       this._preferredURI = createSignalingEndpointURL(preferredURI);
     } else {
-      this._log.info('Could not parse a preferred URI from the stream#connected event.');
+      this._log.warn('Could not parse a preferred URI from the stream#connected event.');
     }
 
     // The signaling stream emits a `connected` event after reconnection, if the
@@ -1196,7 +1250,8 @@ class Device extends EventEmitter {
       twilioError = new GeneralErrors.UnknownError(customMessage, originalError);
     }
 
-    this._log.info('Received error: ', twilioError);
+    this._log.error('Received error: ', twilioError);
+    this._log.debug('#error', originalError);
     this.emit(Device.EventName.Error, twilioError, call);
   }
 
@@ -1211,6 +1266,7 @@ class Device extends EventEmitter {
     }
 
     if (!payload.callsid || !payload.sdp) {
+      this._log.debug('#error', payload);
       this.emit(Device.EventName.Error, new ClientErrors.BadRequest('Malformed invite from gateway'));
       return;
     }
@@ -1330,28 +1386,38 @@ class Device extends EventEmitter {
     }
 
     this._state = state;
-    this.emit(this._stateEventMapping[state]);
+    const name = this._stateEventMapping[state];
+    this._log.debug(`#${name}`);
+    this.emit(name);
   }
 
   /**
    * Set up an audio helper for usage by this {@link Device}.
    */
   private _setupAudioHelper(): void {
+    if (!this._audioProcessorEventObserver) {
+      this._audioProcessorEventObserver = new AudioProcessorEventObserver();
+      this._audioProcessorEventObserver.on('event', ({ name, group }) => {
+        this._publisher.info(group, name, {}, this._activeCall);
+      });
+    }
+
     const audioOptions: AudioHelper.Options = {
       audioContext: Device.audioContext,
+      audioProcessorEventObserver: this._audioProcessorEventObserver,
       enumerateDevices: this._options.enumerateDevices,
+      getUserMedia: this._options.getUserMedia || getUserMedia,
     };
 
     if (this._audio) {
-      this._log.info('Found existing audio helper; destroying...');
-      audioOptions.enabledSounds = this._audio._getEnabledSounds();
-      this._destroyAudioHelper();
+      this._log.info('Found existing audio helper; updating options...');
+      this._audio._updateUserOptions(audioOptions);
+      return;
     }
 
     this._audio = new (this._options.AudioHelper || AudioHelper)(
       this._updateSinkIds,
       this._updateInputStream,
-      this._options.getUserMedia || getUserMedia,
       audioOptions,
     );
 
@@ -1370,6 +1436,18 @@ class Device extends EventEmitter {
   }
 
   /**
+   * Setup logger's loglevel
+   */
+  private _setupLoglevel(logLevel?: LogLevelDesc): void {
+    const level = typeof logLevel === 'number' ||
+      typeof logLevel === 'string' ?
+      logLevel : LogLevels.ERROR;
+
+    this._log.setDefaultLevel(level);
+    this._log.info('Set logger default level to', level);
+  }
+
+  /**
    * Create and set a publisher for the {@link Device} to use.
    */
   private _setupPublisher(): IPublisher {
@@ -1380,7 +1458,6 @@ class Device extends EventEmitter {
 
     const publisherOptions = {
       defaultPayload: this._createDefaultPayload,
-      log: this._log,
       metadata: {
         app_name: this._options.appName,
         app_version: this._options.appVersion,
@@ -1458,9 +1535,13 @@ class Device extends EventEmitter {
         }, RINGTONE_PLAY_TIMEOUT);
       }),
     ]).catch(reason => {
-      this._log.info(reason.message);
+      this._log.warn(reason.message);
     }).then(() => {
       clearTimeout(timeout);
+      this._log.debug('#incoming', JSON.stringify({
+        customParameters: call.customParameters,
+        parameters: call.parameters,
+      }));
       this.emit(Device.EventName.Incoming, call);
     });
   }
@@ -1815,7 +1896,14 @@ namespace Device {
     getUserMedia?: any;
 
     /**
-     * Log level.
+     * Sets the log level.
+     *
+     * Possible values include any of the following numbers:
+     * <br/>0 = trace, 1 = debug, 2 = info, 3 = warn, 4 = error, 5 = silent
+     *
+     * Or any of the following strings:
+     * <br/>'trace', 'debug', 'info', 'warn', 'error', 'silent'
+     * <br/>'TRACE', 'DEBUG', 'INFO', 'WARN', 'ERROR', 'SILENT'
      */
     logLevel?: LogLevelDesc;
 

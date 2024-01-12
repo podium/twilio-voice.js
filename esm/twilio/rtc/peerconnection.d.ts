@@ -6,7 +6,7 @@
  * @return {PeerConnection}
  * @constructor
  */
-declare function PeerConnection(audioHelper: any, pstream: any, getUserMedia: any, options: any): any;
+declare function PeerConnection(audioHelper: any, pstream: any, options: any): any;
 declare namespace PeerConnection {
     var protocol: any;
     var enabled: boolean;

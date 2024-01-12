@@ -4,6 +4,8 @@
  * @module Voice
  */
 import { EventEmitter } from 'events';
+import AudioProcessor from './audioprocessor';
+import { AudioProcessorEventObserver } from './audioprocessoreventobserver';
 import Device from './device';
 import OutputDeviceCollection from './outputdevicecollection';
 /**
@@ -29,7 +31,8 @@ declare class AudioHelper extends EventEmitter {
      */
     get inputDevice(): MediaDeviceInfo | null;
     /**
-     * The current input stream.
+     * The current input stream coming from the microphone device or
+     * the processed audio stream if there is an {@link AudioProcessor}.
      */
     get inputStream(): MediaStream | null;
     /**
@@ -65,6 +68,17 @@ declare class AudioHelper extends EventEmitter {
      */
     private _audioContext?;
     /**
+     * The AudioProcessorEventObserver instance to use
+     */
+    private _audioProcessorEventObserver;
+    /**
+     * The audio stream of the default device.
+     * This is populated when _openDefaultDeviceWithConstraints is called,
+     * See _selectedInputDeviceStream for differences.
+     * TODO: Combine these two workflows (3.x?)
+     */
+    private _defaultInputDeviceStream;
+    /**
      * Whether each sound is enabled.
      */
     private _enabledSounds;
@@ -80,10 +94,6 @@ declare class AudioHelper extends EventEmitter {
      * The current input device.
      */
     private _inputDevice;
-    /**
-     * The current input stream.
-     */
-    private _inputStream;
     /**
      * An AnalyserNode to use for input volume.
      */
@@ -109,6 +119,22 @@ declare class AudioHelper extends EventEmitter {
      */
     private _onActiveInputChanged;
     /**
+     * Internal reference to the processed stream
+     */
+    private _processedStream;
+    /**
+     * Internal reference to the added AudioProcessor
+     */
+    private _processor;
+    /**
+     * The selected input stream coming from the microphone device.
+     * This is populated when the setInputDevice is called, meaning,
+     * the end user manually selected it, which is different than
+     * the defaultInputDeviceStream.
+     * TODO: Combine these two workflows (3.x?)
+     */
+    private _selectedInputDeviceStream;
+    /**
      * A record of unknown devices (Devices without labels)
      */
     private _unknownDeviceIndexes;
@@ -117,15 +143,14 @@ declare class AudioHelper extends EventEmitter {
      * @private
      * @param onActiveOutputsChanged - A callback to be called when the user changes the active output devices.
      * @param onActiveInputChanged - A callback to be called when the user changes the active input device.
-     * @param getUserMedia - The getUserMedia method to use.
      * @param [options]
      */
-    constructor(onActiveOutputsChanged: (type: 'ringtone' | 'speaker', outputIds: string[]) => Promise<void>, onActiveInputChanged: (stream: MediaStream | null) => Promise<void>, getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>, options?: AudioHelper.Options);
+    constructor(onActiveOutputsChanged: (type: 'ringtone' | 'speaker', outputIds: string[]) => Promise<void>, onActiveInputChanged: (stream: MediaStream | null) => Promise<void>, options?: AudioHelper.Options);
     /**
-     * Current state of the enabled sounds
+     * Destroy this AudioHelper instance
      * @private
      */
-    _getEnabledSounds(): Record<Device.ToggleableSound, boolean>;
+    _destroy(): void;
     /**
      * Start polling volume if it's supported and there's an input stream to poll.
      * @private
@@ -137,6 +162,16 @@ declare class AudioHelper extends EventEmitter {
      */
     _maybeStopPollingVolume(): void;
     /**
+     * Call getUserMedia with specified constraints
+     * @private
+     */
+    _openDefaultDeviceWithConstraints(constraints: MediaStreamConstraints): Promise<MediaStream>;
+    /**
+     * Stop the default audio stream
+     * @private
+     */
+    _stopDefaultInputDeviceStream(): void;
+    /**
      * Unbind the listeners from mediaDevices.
      * @private
      */
@@ -146,6 +181,22 @@ declare class AudioHelper extends EventEmitter {
      * @private
      */
     _updateAvailableDevices: () => Promise<void>;
+    /**
+     * Update AudioHelper options that can be changed by the user
+     * @private
+     */
+    _updateUserOptions(options: AudioHelper.Options): void;
+    /**
+     * Adds an {@link AudioProcessor} object. Once added, the AudioHelper will route
+     * the input audio stream through the processor before sending the audio
+     * stream to Twilio. Only one AudioProcessor can be added at this time.
+     *
+     * See the {@link AudioProcessor} interface for an example.
+     *
+     * @param processor The AudioProcessor to add.
+     * @returns
+     */
+    addProcessor(processor: AudioProcessor): Promise<void>;
     /**
      * Enable or disable the disconnect sound.
      * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
@@ -167,6 +218,14 @@ declare class AudioHelper extends EventEmitter {
      * @returns The enable-status of the sound.
      */
     outgoing(doEnable?: boolean): boolean;
+    /**
+     * Removes an {@link AudioProcessor}. Once removed, the AudioHelper will start using
+     * the audio stream from the selected input device for existing or future calls.
+     *
+     * @param processor The AudioProcessor to remove.
+     * @returns
+     */
+    removeProcessor(processor: AudioProcessor): Promise<void>;
     /**
      * Set the MediaTrackConstraints to be applied on every getUserMedia call for new input
      * device audio. Any deviceId specified here will be ignored. Instead, device IDs should
@@ -193,6 +252,10 @@ declare class AudioHelper extends EventEmitter {
      */
     unsetInputDevice(): Promise<void>;
     /**
+     * Destroys processed stream and update references
+     */
+    private _destroyProcessedStream;
+    /**
      * Get the index of an un-labeled Device.
      * @param mediaDeviceInfo
      * @returns The index of the passed MediaDeviceInfo
@@ -202,6 +265,10 @@ declare class AudioHelper extends EventEmitter {
      * Initialize output device enumeration.
      */
     private _initializeEnumeration;
+    /**
+     * Route input stream to the processor if it exists
+     */
+    private _maybeCreateProcessedStream;
     /**
      * Set whether the sound is enabled or not
      * @param soundName
@@ -227,6 +294,10 @@ declare class AudioHelper extends EventEmitter {
      */
     private _replaceStream;
     /**
+     * Restart the active streams
+     */
+    private _restartStreams;
+    /**
      * Replace the current input device with a new device by ID.
      * @param deviceId - An ID of a device to replace the existing
      *   input device with.
@@ -234,6 +305,10 @@ declare class AudioHelper extends EventEmitter {
      *   the specified device is already active.
      */
     private _setInputDevice;
+    /**
+     * Stop the selected audio stream
+     */
+    private _stopSelectedInputDeviceStream;
     /**
      * Update a set of devices.
      * @param updatedDevices - An updated list of available Devices
@@ -279,6 +354,10 @@ declare namespace AudioHelper {
          */
         audioContext?: AudioContext;
         /**
+         * AudioProcessorEventObserver to use
+         */
+        audioProcessorEventObserver: AudioProcessorEventObserver;
+        /**
          * Whether each sound is enabled.
          */
         enabledSounds?: Record<Device.ToggleableSound, boolean>;
@@ -286,6 +365,10 @@ declare namespace AudioHelper {
          * Overrides the native MediaDevices.enumerateDevices API.
          */
         enumerateDevices?: any;
+        /**
+         * The getUserMedia method to use
+         */
+        getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
         /**
          * A custom MediaDevices instance to use.
          */

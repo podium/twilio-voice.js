@@ -1,9 +1,9 @@
-/*! @twilio/voice-sdk.js 2.8.1-dev
+/*! @twilio/voice-sdk.js 2.10.0
 
 The following license applies to all parts of this software except as
 documented below.
 
-    Copyright (C) 2015-2023 Twilio, inc.
+    Copyright (C) 2015-2024 Twilio, inc.
  
     Licensed under the Apache License, Version 2.0 (the "License");
     you may not use this file except in compliance with the License.
@@ -101,10 +101,6 @@ This software includes loglevel under the following (MIT) license.
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.TwilioError = exports.Logger = exports.PreflightTest = exports.Device = exports.Call = void 0;
-/**
- * @packageDocumentation
- * @internalapi
- */
 var call_1 = require("./twilio/call");
 exports.Call = call_1.default;
 var device_1 = require("./twilio/device");
@@ -116,7 +112,7 @@ Object.defineProperty(exports, "Logger", { enumerable: true, get: function () { 
 var preflight_1 = require("./twilio/preflight/preflight");
 Object.defineProperty(exports, "PreflightTest", { enumerable: true, get: function () { return preflight_1.PreflightTest; } });
 
-},{"./twilio/call":8,"./twilio/device":11,"./twilio/errors":14,"./twilio/log":17,"./twilio/preflight/preflight":19}],2:[function(require,module,exports){
+},{"./twilio/call":9,"./twilio/device":12,"./twilio/errors":15,"./twilio/log":18,"./twilio/preflight/preflight":20}],2:[function(require,module,exports){
 "use strict";
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
@@ -232,7 +228,7 @@ var AsyncQueue = /** @class */ (function () {
 }());
 exports.AsyncQueue = AsyncQueue;
 
-},{"./deferred":10}],3:[function(require,module,exports){
+},{"./deferred":11}],3:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -278,10 +274,9 @@ var AudioHelper = /** @class */ (function (_super) {
      * @private
      * @param onActiveOutputsChanged - A callback to be called when the user changes the active output devices.
      * @param onActiveInputChanged - A callback to be called when the user changes the active input device.
-     * @param getUserMedia - The getUserMedia method to use.
      * @param [options]
      */
-    function AudioHelper(onActiveOutputsChanged, onActiveInputChanged, getUserMedia, options) {
+    function AudioHelper(onActiveOutputsChanged, onActiveInputChanged, options) {
         var _a;
         var _this = _super.call(this) || this;
         /**
@@ -297,6 +292,13 @@ var AudioHelper = /** @class */ (function (_super) {
          */
         _this._audioConstraints = null;
         /**
+         * The audio stream of the default device.
+         * This is populated when _openDefaultDeviceWithConstraints is called,
+         * See _selectedInputDeviceStream for differences.
+         * TODO: Combine these two workflows (3.x?)
+         */
+        _this._defaultInputDeviceStream = null;
+        /**
          * Whether each sound is enabled.
          */
         _this._enabledSounds = (_a = {},
@@ -309,17 +311,25 @@ var AudioHelper = /** @class */ (function (_super) {
          */
         _this._inputDevice = null;
         /**
-         * The current input stream.
-         */
-        _this._inputStream = null;
-        /**
          * Whether the {@link AudioHelper} is currently polling the input stream's volume.
          */
         _this._isPollingInputVolume = false;
         /**
          * An instance of Logger to use.
          */
-        _this._log = log_1.default.getInstance();
+        _this._log = new log_1.default('AudioHelper');
+        /**
+         * Internal reference to the processed stream
+         */
+        _this._processedStream = null;
+        /**
+         * The selected input stream coming from the microphone device.
+         * This is populated when the setInputDevice is called, meaning,
+         * the end user manually selected it, which is different than
+         * the defaultInputDeviceStream.
+         * TODO: Combine these two workflows (3.x?)
+         */
+        _this._selectedInputDeviceStream = null;
         /**
          * A record of unknown devices (Devices without labels)
          */
@@ -359,6 +369,7 @@ var AudioHelper = /** @class */ (function (_super) {
             if (!_this.inputDevice || _this.inputDevice.deviceId !== lostDevice.deviceId) {
                 return false;
             }
+            _this._destroyProcessedStream();
             _this._replaceStream(null);
             _this._inputDevice = null;
             _this._maybeStopPollingVolume();
@@ -383,7 +394,8 @@ var AudioHelper = /** @class */ (function (_super) {
             AudioContext: typeof AudioContext !== 'undefined' && AudioContext,
             setSinkId: typeof HTMLAudioElement !== 'undefined' && HTMLAudioElement.prototype.setSinkId,
         }, options);
-        _this._getUserMedia = getUserMedia;
+        _this._updateUserOptions(options);
+        _this._audioProcessorEventObserver = options.audioProcessorEventObserver;
         _this._mediaDevices = options.mediaDevices || navigator.mediaDevices;
         _this._onActiveInputChanged = onActiveInputChanged;
         _this._enumerateDevices = typeof options.enumerateDevices === 'function'
@@ -453,18 +465,24 @@ var AudioHelper = /** @class */ (function (_super) {
     });
     Object.defineProperty(AudioHelper.prototype, "inputStream", {
         /**
-         * The current input stream.
+         * The current input stream coming from the microphone device or
+         * the processed audio stream if there is an {@link AudioProcessor}.
          */
-        get: function () { return this._inputStream; },
+        get: function () { return this._processedStream || this._selectedInputDeviceStream; },
         enumerable: false,
         configurable: true
     });
     /**
-     * Current state of the enabled sounds
+     * Destroy this AudioHelper instance
      * @private
      */
-    AudioHelper.prototype._getEnabledSounds = function () {
-        return this._enabledSounds;
+    AudioHelper.prototype._destroy = function () {
+        this._stopDefaultInputDeviceStream();
+        this._stopSelectedInputDeviceStream();
+        this._destroyProcessedStream();
+        this._maybeStopPollingVolume();
+        this.removeAllListeners();
+        this._unbind();
     };
     /**
      * Start polling volume if it's supported and there's an input stream to poll.
@@ -472,7 +490,7 @@ var AudioHelper = /** @class */ (function (_super) {
      */
     AudioHelper.prototype._maybeStartPollingVolume = function () {
         var _this = this;
-        if (!this.isVolumeSupported || !this._inputStream) {
+        if (!this.isVolumeSupported || !this.inputStream) {
             return;
         }
         this._updateVolumeSource();
@@ -503,7 +521,7 @@ var AudioHelper = /** @class */ (function (_super) {
         if (!this.isVolumeSupported) {
             return;
         }
-        if (!this._isPollingInputVolume || (this._inputStream && this.listenerCount('inputVolume'))) {
+        if (!this._isPollingInputVolume || (this.inputStream && this.listenerCount('inputVolume'))) {
             return;
         }
         if (this._inputVolumeSource) {
@@ -511,6 +529,37 @@ var AudioHelper = /** @class */ (function (_super) {
             delete this._inputVolumeSource;
         }
         this._isPollingInputVolume = false;
+    };
+    /**
+     * Call getUserMedia with specified constraints
+     * @private
+     */
+    AudioHelper.prototype._openDefaultDeviceWithConstraints = function (constraints) {
+        var _this = this;
+        this._log.info('Opening default device with constraints', constraints);
+        return this._getUserMedia(constraints).then(function (stream) {
+            _this._log.info('Opened default device. Updating available devices.');
+            // Ensures deviceId's and labels are populated after the gUM call
+            // by calling enumerateDevices
+            _this._updateAvailableDevices().catch(function (error) {
+                // Ignore error, we don't want to break the call flow
+                _this._log.warn('Unable to updateAvailableDevices after gUM call', error);
+            });
+            _this._defaultInputDeviceStream = stream;
+            return _this._maybeCreateProcessedStream(stream);
+        });
+    };
+    /**
+     * Stop the default audio stream
+     * @private
+     */
+    AudioHelper.prototype._stopDefaultInputDeviceStream = function () {
+        if (this._defaultInputDeviceStream) {
+            this._log.info('stopping default device stream');
+            this._defaultInputDeviceStream.getTracks().forEach(function (track) { return track.stop(); });
+            this._defaultInputDeviceStream = null;
+            this._destroyProcessedStream();
+        }
     };
     /**
      * Unbind the listeners from mediaDevices.
@@ -525,12 +574,53 @@ var AudioHelper = /** @class */ (function (_super) {
         }
     };
     /**
+     * Update AudioHelper options that can be changed by the user
+     * @private
+     */
+    AudioHelper.prototype._updateUserOptions = function (options) {
+        if (typeof options.enumerateDevices === 'function') {
+            this._enumerateDevices = options.enumerateDevices;
+        }
+        if (typeof options.getUserMedia === 'function') {
+            this._getUserMedia = options.getUserMedia;
+        }
+    };
+    /**
+     * Adds an {@link AudioProcessor} object. Once added, the AudioHelper will route
+     * the input audio stream through the processor before sending the audio
+     * stream to Twilio. Only one AudioProcessor can be added at this time.
+     *
+     * See the {@link AudioProcessor} interface for an example.
+     *
+     * @param processor The AudioProcessor to add.
+     * @returns
+     */
+    AudioHelper.prototype.addProcessor = function (processor) {
+        this._log.debug('.addProcessor');
+        if (this._processor) {
+            throw new errors_1.NotSupportedError('Adding multiple AudioProcessors is not supported at this time.');
+        }
+        if (typeof processor !== 'object' || processor === null) {
+            throw new errors_1.InvalidArgumentError('Missing AudioProcessor argument.');
+        }
+        if (typeof processor.createProcessedStream !== 'function') {
+            throw new errors_1.InvalidArgumentError('Missing createProcessedStream() method.');
+        }
+        if (typeof processor.destroyProcessedStream !== 'function') {
+            throw new errors_1.InvalidArgumentError('Missing destroyProcessedStream() method.');
+        }
+        this._processor = processor;
+        this._audioProcessorEventObserver.emit('add');
+        return this._restartStreams();
+    };
+    /**
      * Enable or disable the disconnect sound.
      * @param doEnable Passing `true` will enable the sound and `false` will disable the sound.
      * Not passing this parameter will not alter the enable-status of the sound.
      * @returns The enable-status of the sound.
      */
     AudioHelper.prototype.disconnect = function (doEnable) {
+        this._log.debug('.disconnect', doEnable);
         return this._maybeEnableSound(device_1.default.SoundName.Disconnect, doEnable);
     };
     /**
@@ -540,6 +630,7 @@ var AudioHelper = /** @class */ (function (_super) {
      * @returns The enable-status of the sound.
      */
     AudioHelper.prototype.incoming = function (doEnable) {
+        this._log.debug('.incoming', doEnable);
         return this._maybeEnableSound(device_1.default.SoundName.Incoming, doEnable);
     };
     /**
@@ -549,7 +640,28 @@ var AudioHelper = /** @class */ (function (_super) {
      * @returns The enable-status of the sound.
      */
     AudioHelper.prototype.outgoing = function (doEnable) {
+        this._log.debug('.outgoing', doEnable);
         return this._maybeEnableSound(device_1.default.SoundName.Outgoing, doEnable);
+    };
+    /**
+     * Removes an {@link AudioProcessor}. Once removed, the AudioHelper will start using
+     * the audio stream from the selected input device for existing or future calls.
+     *
+     * @param processor The AudioProcessor to remove.
+     * @returns
+     */
+    AudioHelper.prototype.removeProcessor = function (processor) {
+        this._log.debug('.removeProcessor');
+        if (typeof processor !== 'object' || processor === null) {
+            throw new errors_1.InvalidArgumentError('Missing AudioProcessor argument.');
+        }
+        if (this._processor !== processor) {
+            throw new errors_1.InvalidArgumentError('Cannot remove an AudioProcessor that has not been previously added.');
+        }
+        this._destroyProcessedStream();
+        this._processor = null;
+        this._audioProcessorEventObserver.emit('remove');
+        return this._restartStreams();
     };
     /**
      * Set the MediaTrackConstraints to be applied on every getUserMedia call for new input
@@ -559,6 +671,7 @@ var AudioHelper = /** @class */ (function (_super) {
      * @param audioConstraints - The MediaTrackConstraints to apply.
      */
     AudioHelper.prototype.setAudioConstraints = function (audioConstraints) {
+        this._log.debug('.setAudioConstraints', audioConstraints);
         this._audioConstraints = Object.assign({}, audioConstraints);
         delete this._audioConstraints.deviceId;
         return this.inputDevice
@@ -571,12 +684,8 @@ var AudioHelper = /** @class */ (function (_super) {
      *   input device with.
      */
     AudioHelper.prototype.setInputDevice = function (deviceId) {
-        return !util_1.isFirefox()
-            ? this._setInputDevice(deviceId, false)
-            : Promise.reject(new errors_1.NotSupportedError('Firefox does not currently support opening multiple ' +
-                'audio input tracks simultaneously, even across different tabs. As a result, ' +
-                'Device.audio.setInputDevice is disabled on Firefox until support is added.\n' +
-                'Related BugZilla thread: https://bugzilla.mozilla.org/show_bug.cgi?id=1299324'));
+        this._log.debug('.setInputDevice', deviceId);
+        return this._setInputDevice(deviceId, false);
     };
     /**
      * Unset the MediaTrackConstraints to be applied on every getUserMedia call for new input
@@ -584,6 +693,7 @@ var AudioHelper = /** @class */ (function (_super) {
      * or immediately if no input device is set.
      */
     AudioHelper.prototype.unsetAudioConstraints = function () {
+        this._log.debug('.unsetAudioConstraints');
         this._audioConstraints = null;
         return this.inputDevice
             ? this._setInputDevice(this.inputDevice.deviceId, true)
@@ -595,14 +705,29 @@ var AudioHelper = /** @class */ (function (_super) {
      */
     AudioHelper.prototype.unsetInputDevice = function () {
         var _this = this;
+        this._log.debug('.unsetInputDevice', this.inputDevice);
         if (!this.inputDevice) {
             return Promise.resolve();
         }
+        this._destroyProcessedStream();
         return this._onActiveInputChanged(null).then(function () {
             _this._replaceStream(null);
             _this._inputDevice = null;
             _this._maybeStopPollingVolume();
         });
+    };
+    /**
+     * Destroys processed stream and update references
+     */
+    AudioHelper.prototype._destroyProcessedStream = function () {
+        if (this._processor && this._processedStream) {
+            this._log.info('destroying processed stream');
+            var processedStream = this._processedStream;
+            this._processedStream.getTracks().forEach(function (track) { return track.stop(); });
+            this._processedStream = null;
+            this._processor.destroyProcessedStream(processedStream);
+            this._audioProcessorEventObserver.emit('destroy');
+        }
     };
     /**
      * Get the index of an un-labeled Device.
@@ -643,6 +768,21 @@ var AudioHelper = /** @class */ (function (_super) {
         });
     };
     /**
+     * Route input stream to the processor if it exists
+     */
+    AudioHelper.prototype._maybeCreateProcessedStream = function (stream) {
+        var _this = this;
+        if (this._processor) {
+            this._log.info('Creating processed stream');
+            return this._processor.createProcessedStream(stream).then(function (processedStream) {
+                _this._processedStream = processedStream;
+                _this._audioProcessorEventObserver.emit('create');
+                return _this._processedStream;
+            });
+        }
+        return Promise.resolve(stream);
+    };
+    /**
      * Set whether the sound is enabled or not
      * @param soundName
      * @param doEnable
@@ -659,12 +799,28 @@ var AudioHelper = /** @class */ (function (_super) {
      * @param stream - The new stream
      */
     AudioHelper.prototype._replaceStream = function (stream) {
-        if (this._inputStream) {
-            this._inputStream.getTracks().forEach(function (track) {
-                track.stop();
-            });
+        this._log.info('Replacing with new stream.');
+        if (this._selectedInputDeviceStream) {
+            this._log.info('Old stream detected. Stopping tracks.');
+            this._stopSelectedInputDeviceStream();
         }
-        this._inputStream = stream;
+        this._selectedInputDeviceStream = stream;
+    };
+    /**
+     * Restart the active streams
+     */
+    AudioHelper.prototype._restartStreams = function () {
+        if (this.inputDevice && this._selectedInputDeviceStream) {
+            this._log.info('Restarting selected input device');
+            return this._setInputDevice(this.inputDevice.deviceId, true);
+        }
+        if (this._defaultInputDeviceStream) {
+            var defaultDevice = this.availableInputDevices.get('default')
+                || Array.from(this.availableInputDevices.values())[0];
+            this._log.info('Restarting default input device, now becoming selected.');
+            return this._setInputDevice(defaultDevice.deviceId, true);
+        }
+        return Promise.resolve();
     };
     /**
      * Replace the current input device with a new device by ID.
@@ -682,24 +838,40 @@ var AudioHelper = /** @class */ (function (_super) {
         if (!device) {
             return Promise.reject(new errors_1.InvalidArgumentError("Device not found: " + deviceId));
         }
-        if (this._inputDevice && this._inputDevice.deviceId === deviceId && this._inputStream) {
+        this._log.info('Setting input device. ID: ' + deviceId);
+        if (this._inputDevice && this._inputDevice.deviceId === deviceId && this._selectedInputDeviceStream) {
             if (!forceGetUserMedia) {
                 return Promise.resolve();
             }
             // If the currently active track is still in readyState `live`, gUM may return the same track
             // rather than returning a fresh track.
-            this._inputStream.getTracks().forEach(function (track) {
-                track.stop();
-            });
+            this._log.info('Same track detected on setInputDevice, stopping old tracks.');
+            this._stopSelectedInputDeviceStream();
         }
+        // Release the default device in case it was created previously
+        this._stopDefaultInputDeviceStream();
         var constraints = { audio: Object.assign({ deviceId: { exact: deviceId } }, this.audioConstraints) };
-        return this._getUserMedia(constraints).then(function (stream) {
-            return _this._onActiveInputChanged(stream).then(function () {
-                _this._replaceStream(stream);
-                _this._inputDevice = device;
-                _this._maybeStartPollingVolume();
+        this._log.info('setInputDevice: getting new tracks.');
+        return this._getUserMedia(constraints).then(function (originalStream) {
+            _this._destroyProcessedStream();
+            return _this._maybeCreateProcessedStream(originalStream).then(function (newStream) {
+                _this._log.info('setInputDevice: invoking _onActiveInputChanged.');
+                return _this._onActiveInputChanged(newStream).then(function () {
+                    _this._replaceStream(originalStream);
+                    _this._inputDevice = device;
+                    _this._maybeStartPollingVolume();
+                });
             });
         });
+    };
+    /**
+     * Stop the selected audio stream
+     */
+    AudioHelper.prototype._stopSelectedInputDeviceStream = function () {
+        if (this._selectedInputDeviceStream) {
+            this._log.info('Stopping selected device stream');
+            this._selectedInputDeviceStream.getTracks().forEach(function (track) { return track.stop(); });
+        }
     };
     /**
      * Update a set of devices.
@@ -744,6 +916,7 @@ var AudioHelper = /** @class */ (function (_super) {
                 this._log.warn("Calling getUserMedia after device change to ensure that the           tracks of the active device (default) have not gone stale.");
                 this._setInputDevice(this.inputDevice.deviceId, true);
             }
+            this._log.debug('#deviceChange', lostActiveDevices);
             this.emit('deviceChange', lostActiveDevices);
         }
     };
@@ -752,14 +925,14 @@ var AudioHelper = /** @class */ (function (_super) {
      * input stream.
      */
     AudioHelper.prototype._updateVolumeSource = function () {
-        if (!this._inputStream || !this._audioContext || !this._inputVolumeAnalyser) {
+        if (!this.inputStream || !this._audioContext || !this._inputVolumeAnalyser) {
             return;
         }
         if (this._inputVolumeSource) {
             this._inputVolumeSource.disconnect();
         }
         try {
-            this._inputVolumeSource = this._audioContext.createMediaStreamSource(this._inputStream);
+            this._inputVolumeSource = this._audioContext.createMediaStreamSource(this.inputStream);
             this._inputVolumeSource.connect(this._inputVolumeAnalyser);
         }
         catch (ex) {
@@ -796,7 +969,7 @@ var AudioHelper = /** @class */ (function (_super) {
 })(AudioHelper || (AudioHelper = {}));
 exports.default = AudioHelper;
 
-},{"./device":11,"./errors":14,"./log":17,"./outputdevicecollection":18,"./shims/mediadeviceinfo":32,"./util":35,"events":38}],4:[function(require,module,exports){
+},{"./device":12,"./errors":15,"./log":18,"./outputdevicecollection":19,"./shims/mediadeviceinfo":33,"./util":36,"events":39}],4:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -1260,7 +1433,59 @@ var EventTarget = /** @class */ (function () {
 }());
 exports.default = EventTarget;
 
-},{"events":38}],7:[function(require,module,exports){
+},{"events":39}],7:[function(require,module,exports){
+"use strict";
+/**
+ * @packageDocumentation
+ * @module Voice
+ * @internalapi
+ */
+var __extends = (this && this.__extends) || (function () {
+    var extendStatics = function (d, b) {
+        extendStatics = Object.setPrototypeOf ||
+            ({ __proto__: [] } instanceof Array && function (d, b) { d.__proto__ = b; }) ||
+            function (d, b) { for (var p in b) if (Object.prototype.hasOwnProperty.call(b, p)) d[p] = b[p]; };
+        return extendStatics(d, b);
+    };
+    return function (d, b) {
+        extendStatics(d, b);
+        function __() { this.constructor = d; }
+        d.prototype = b === null ? Object.create(b) : (__.prototype = b.prototype, new __());
+    };
+})();
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.AudioProcessorEventObserver = void 0;
+var events_1 = require("events");
+var log_1 = require("./log");
+/**
+ * AudioProcessorEventObserver observes {@link AudioProcessor}
+ * related operations and re-emits them as generic events.
+ * @private
+ */
+var AudioProcessorEventObserver = /** @class */ (function (_super) {
+    __extends(AudioProcessorEventObserver, _super);
+    function AudioProcessorEventObserver() {
+        var _this = _super.call(this) || this;
+        _this._log = new log_1.default('AudioProcessorEventObserver');
+        _this._log.info('Creating AudioProcessorEventObserver instance');
+        _this.on('add', function () { return _this._reEmitEvent('add'); });
+        _this.on('remove', function () { return _this._reEmitEvent('remove'); });
+        _this.on('create', function () { return _this._reEmitEvent('create-processed-stream'); });
+        _this.on('destroy', function () { return _this._reEmitEvent('destroy-processed-stream'); });
+        return _this;
+    }
+    AudioProcessorEventObserver.prototype.destroy = function () {
+        this.removeAllListeners();
+    };
+    AudioProcessorEventObserver.prototype._reEmitEvent = function (name) {
+        this._log.info("AudioProcessor:" + name);
+        this.emit('event', { name: name, group: 'audio-processor' });
+    };
+    return AudioProcessorEventObserver;
+}(events_1.EventEmitter));
+exports.AudioProcessorEventObserver = AudioProcessorEventObserver;
+
+},{"./log":18,"events":39}],8:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -1350,7 +1575,7 @@ var Backoff = /** @class */ (function (_super) {
 }(events_1.EventEmitter));
 exports.default = Backoff;
 
-},{"events":38}],8:[function(require,module,exports){
+},{"events":39}],9:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -1483,7 +1708,7 @@ var Call = /** @class */ (function (_super) {
         /**
          * An instance of Logger to use.
          */
-        _this._log = log_1.default.getInstance();
+        _this._log = new log_1.default('Call');
         /**
          * State of the {@link Call}'s media.
          */
@@ -1566,6 +1791,7 @@ var Call = /** @class */ (function (_super) {
             _this._publisher.post(level, groupName, warningName, { data: payloadData }, _this);
             if (warningName !== 'constant-audio-output-level') {
                 var emitName = wasCleared ? 'warning-cleared' : 'warning';
+                _this._log.debug("#" + emitName, warningName);
                 _this.emit(emitName, warningName, warningData && !wasCleared ? warningData : null);
             }
         };
@@ -1615,6 +1841,7 @@ var Call = /** @class */ (function (_super) {
                 _this._cleanupEventListeners();
                 _this._mediaHandler.close();
                 _this._status = Call.State.Closed;
+                _this._log.debug('#cancel');
                 _this.emit('cancel');
                 _this._pstream.removeListener('cancel', _this._onCancel);
             }
@@ -1660,6 +1887,7 @@ var Call = /** @class */ (function (_super) {
                     ? new errorConstructor(payload.error.message)
                     : new errors_1.GeneralErrors.ConnectionError('Error sent from gateway in HANGUP');
                 _this._log.error('Received an error from the gateway:', error);
+                _this._log.debug('#error', error);
                 _this.emit('error', error);
             }
             _this._shouldSendHangup = false;
@@ -1688,7 +1916,7 @@ var Call = /** @class */ (function (_super) {
                 if (isEndOfIceCycle) {
                     // We already exceeded max retry time.
                     if (Date.now() - _this._mediaReconnectStartTime > BACKOFF_CONFIG.max) {
-                        _this._log.info('Exceeded max ICE retries');
+                        _this._log.warn('Exceeded max ICE retries');
                         return _this._mediaHandler.onerror(MEDIA_DISCONNECT_ERROR);
                     }
                     // Issue ICE restart with backoff
@@ -1723,6 +1951,7 @@ var Call = /** @class */ (function (_super) {
                 _this._mediaStatus = Call.State.Reconnecting;
                 _this._mediaReconnectBackoff.reset();
                 _this._mediaReconnectBackoff.backoff();
+                _this._log.debug('#reconnecting');
                 _this.emit('reconnecting', mediaReconnectionError);
             }
         };
@@ -1739,6 +1968,7 @@ var Call = /** @class */ (function (_super) {
             _this._mediaStatus = Call.State.Open;
             if (_this._signalingStatus === Call.State.Open) {
                 _this._publisher.info('connection', 'reconnected', null, _this);
+                _this._log.debug('#reconnected');
                 _this.emit('reconnected');
                 _this._status = Call.State.Open;
             }
@@ -1754,12 +1984,14 @@ var Call = /** @class */ (function (_super) {
                 _this._log.warn("Received a message from a different callsid: " + callsid);
                 return;
             }
-            _this.emit('messageReceived', {
+            var data = {
                 content: content,
                 contentType: contenttype,
                 messageType: messagetype,
                 voiceEventSid: voiceeventsid,
-            });
+            };
+            _this._log.debug('#messageReceived', JSON.stringify(data));
+            _this.emit('messageReceived', data);
         };
         /**
          * Raised when a Call receives an 'ack' with an 'acktype' of 'message.
@@ -1773,6 +2005,7 @@ var Call = /** @class */ (function (_super) {
             }
             var message = _this._messages.get(voiceEventSid);
             _this._messages.delete(voiceEventSid);
+            _this._log.debug('#messageSent', JSON.stringify(message));
             _this.emit('messageSent', message);
         };
         /**
@@ -1788,6 +2021,7 @@ var Call = /** @class */ (function (_super) {
             var hasEarlyMedia = !!payload.sdp;
             _this._status = Call.State.Ringing;
             _this._publisher.info('connection', 'outgoing-ringing', { hasEarlyMedia: hasEarlyMedia }, _this);
+            _this._log.debug('#ringing');
             _this.emit('ringing', hasEarlyMedia);
         };
         /**
@@ -1830,6 +2064,7 @@ var Call = /** @class */ (function (_super) {
             _this._signalingStatus = Call.State.Open;
             if (_this._mediaStatus === Call.State.Open) {
                 _this._publisher.info('connection', 'reconnected', null, _this);
+                _this._log.debug('#reconnected');
                 _this.emit('reconnected');
                 _this._status = Call.State.Open;
             }
@@ -1840,10 +2075,12 @@ var Call = /** @class */ (function (_super) {
          */
         _this._onTransportClose = function () {
             _this._log.error('Received transportClose from pstream');
+            _this._log.debug('#transportClose');
             _this.emit('transportClose');
             if (_this._signalingReconnectToken) {
                 _this._status = Call.State.Reconnecting;
                 _this._signalingStatus = Call.State.Reconnecting;
+                _this._log.debug('#reconnecting');
                 _this.emit('reconnecting', new errors_1.SignalingErrors.ConnectionDisconnected());
             }
             else {
@@ -1935,7 +2172,7 @@ var Call = /** @class */ (function (_super) {
         monitor.on('warning-cleared', function (data) {
             _this._reemitWarningCleared(data);
         });
-        _this._mediaHandler = new (_this._options.MediaHandler)(config.audioHelper, config.pstream, config.getUserMedia, {
+        _this._mediaHandler = new (_this._options.MediaHandler)(config.audioHelper, config.pstream, {
             RTCPeerConnection: _this._options.RTCPeerConnection,
             codecPreferences: _this._options.codecPreferences,
             dscp: _this._options.dscp,
@@ -1951,7 +2188,7 @@ var Call = /** @class */ (function (_super) {
             _this._latestOutputVolume = outputVolume;
         });
         _this._mediaHandler.onaudio = function (remoteAudio) {
-            _this._log.info('Remote audio created');
+            _this._log.debug('#audio');
             _this.emit('audio', remoteAudio);
         };
         _this._mediaHandler.onvolume = function (inputVolume, outputVolume, internalInputVolume, internalOutputVolume) {
@@ -2001,10 +2238,11 @@ var Call = /** @class */ (function (_super) {
             _this._publisher.debug('signaling-state', state, null, _this);
         };
         _this._mediaHandler.ondisconnected = function (msg) {
-            _this._log.info(msg);
+            _this._log.warn(msg);
             _this._publisher.warn('network-quality-warning-raised', 'ice-connectivity-lost', {
                 message: msg,
             }, _this);
+            _this._log.debug('#warning', 'ice-connectivity-lost');
             _this.emit('warning', 'ice-connectivity-lost');
             _this._onMediaFailure(Call.MediaFailure.ConnectionDisconnected);
         };
@@ -2022,6 +2260,7 @@ var Call = /** @class */ (function (_super) {
             _this._publisher.info('network-quality-warning-cleared', 'ice-connectivity-lost', {
                 message: msg,
             }, _this);
+            _this._log.debug('#warning-cleared', 'ice-connectivity-lost');
             _this.emit('warning-cleared', 'ice-connectivity-lost');
             _this._onMediaReconnected();
         };
@@ -2031,6 +2270,7 @@ var Call = /** @class */ (function (_super) {
             }
             var error = e.info.twilioError || new errors_1.GeneralErrors.UnknownError(e.info.message);
             _this._log.error('Received an error from MediaStream:', e);
+            _this._log.debug('#error', error);
             _this.emit('error', error);
         };
         _this._mediaHandler.onopen = function () {
@@ -2046,7 +2286,7 @@ var Call = /** @class */ (function (_super) {
                 return;
             }
             else if (_this._status === Call.State.Ringing || _this._status === Call.State.Connecting) {
-                _this.mute(false);
+                _this.mute(_this._mediaHandler.isMuted);
                 _this._mediaStatus = Call.State.Open;
                 _this._maybeTransitionToOpen();
             }
@@ -2068,6 +2308,7 @@ var Call = /** @class */ (function (_super) {
             _this._publishMetrics();
             if (!_this._isCancelled && !_this._isRejected) {
                 // tslint:disable no-console
+                _this._log.debug('#disconnect');
                 _this.emit('disconnect', _this);
             }
         };
@@ -2138,6 +2379,7 @@ var Call = /** @class */ (function (_super) {
         if (this._status !== Call.State.Pending) {
             return;
         }
+        this._log.debug('.accept', options);
         options = options || {};
         var rtcConfiguration = options.rtcConfiguration || this._options.rtcConfiguration;
         var rtcConstraints = options.rtcConstraints || this._options.rtcConstraints || {};
@@ -2196,14 +2438,11 @@ var Call = /** @class */ (function (_super) {
         var inputStream = typeof this._options.getInputStream === 'function' && this._options.getInputStream();
         var promise = inputStream
             ? this._mediaHandler.setInputTracksFromStream(inputStream)
-            : this._mediaHandler.openWithConstraints(audioConstraints);
+            : this._mediaHandler.openDefaultDeviceWithConstraints(audioConstraints);
         promise.then(function () {
             _this._publisher.info('get-user-media', 'succeeded', {
                 data: { audioConstraints: audioConstraints },
             }, _this);
-            if (_this._options.onGetUserMedia) {
-                _this._options.onGetUserMedia();
-            }
             connect();
         }, function (error) {
             var twilioError;
@@ -2227,6 +2466,7 @@ var Call = /** @class */ (function (_super) {
                 }, _this);
             }
             _this._disconnect();
+            _this._log.debug('#error', error);
             _this.emit('error', twilioError);
         });
     };
@@ -2234,6 +2474,7 @@ var Call = /** @class */ (function (_super) {
      * Disconnect from the {@link Call}.
      */
     Call.prototype.disconnect = function () {
+        this._log.debug('.disconnect');
         this._disconnect();
     };
     /**
@@ -2255,6 +2496,7 @@ var Call = /** @class */ (function (_super) {
         if (this._status !== Call.State.Pending) {
             return;
         }
+        this._log.debug('.ignore');
         this._status = Call.State.Closed;
         this._mediaHandler.ignore(this.parameters.CallSid);
         this._publisher.info('connection', 'ignored-by-local', null, this);
@@ -2274,11 +2516,13 @@ var Call = /** @class */ (function (_super) {
      */
     Call.prototype.mute = function (shouldMute) {
         if (shouldMute === void 0) { shouldMute = true; }
+        this._log.debug('.mute', shouldMute);
         var wasMuted = this._mediaHandler.isMuted;
         this._mediaHandler.mute(shouldMute);
         var isMuted = this._mediaHandler.isMuted;
         if (wasMuted !== isMuted) {
             this._publisher.info('connection', isMuted ? 'muted' : 'unmuted', null, this);
+            this._log.debug('#mute', isMuted);
             this.emit('mute', isMuted, this);
         }
     };
@@ -2315,6 +2559,7 @@ var Call = /** @class */ (function (_super) {
         if (this._status !== Call.State.Pending) {
             return;
         }
+        this._log.debug('.reject');
         this._isRejected = true;
         this._pstream.reject(this.parameters.CallSid);
         this._mediaHandler.reject(this.parameters.CallSid);
@@ -2322,6 +2567,7 @@ var Call = /** @class */ (function (_super) {
         this._cleanupEventListeners();
         this._mediaHandler.close();
         this._status = Call.State.Closed;
+        this._log.debug('#reject');
         this.emit('reject');
     };
     /**
@@ -2330,6 +2576,7 @@ var Call = /** @class */ (function (_super) {
      */
     Call.prototype.sendDigits = function (digits) {
         var _this = this;
+        this._log.debug('.sendDigits', digits);
         if (digits.match(/[^0-9*#w]/)) {
             throw new errors_1.InvalidArgumentError('Illegal character passed into sendDigits');
         }
@@ -2389,6 +2636,7 @@ var Call = /** @class */ (function (_super) {
         }
         else {
             var error = new errors_1.GeneralErrors.ConnectionError('Could not send DTMF: Signaling channel is disconnected');
+            this._log.debug('#error', error);
             this.emit('error', error);
         }
     };
@@ -2400,6 +2648,7 @@ var Call = /** @class */ (function (_super) {
      * @returns A voice event sid that uniquely identifies the message that was sent.
      */
     Call.prototype.sendMessage = function (message) {
+        this._log.debug('.sendMessage', JSON.stringify(message));
         var content = message.content, contentType = message.contentType, messageType = message.messageType;
         if (typeof content === 'undefined' || content === null) {
             throw new errors_1.InvalidArgumentError('`content` is empty');
@@ -2541,6 +2790,7 @@ var Call = /** @class */ (function (_super) {
                 this._status = Call.State.Open;
                 if (!this._wasConnected) {
                     this._wasConnected = true;
+                    this._log.debug('#accept');
                     this.emit('accept', this);
                 }
             }
@@ -2681,7 +2931,7 @@ function generateTempCallSid() {
 }
 exports.default = Call;
 
-},{"./backoff":7,"./constants":9,"./device":11,"./errors":14,"./log":17,"./rtc":25,"./rtc/icecandidate":24,"./rtc/sdp":30,"./statsMonitor":34,"./util":35,"./uuid":36,"events":38}],9:[function(require,module,exports){
+},{"./backoff":8,"./constants":10,"./device":12,"./errors":15,"./log":18,"./rtc":26,"./rtc/icecandidate":25,"./rtc/sdp":31,"./statsMonitor":35,"./util":36,"./uuid":37,"events":39}],10:[function(require,module,exports){
 "use strict";
 /**
  * This file is generated on build. To make changes, see /templates/constants.ts
@@ -2695,7 +2945,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SOUNDS_BASE_URL = exports.RELEASE_VERSION = exports.PACKAGE_NAME = exports.ECHO_TEST_DURATION = exports.COWBELL_AUDIO_URL = void 0;
 var PACKAGE_NAME = '@twilio/voice-sdk';
 exports.PACKAGE_NAME = PACKAGE_NAME;
-var RELEASE_VERSION = '2.8.1-dev';
+var RELEASE_VERSION = '2.10.0';
 exports.RELEASE_VERSION = RELEASE_VERSION;
 var SOUNDS_BASE_URL = 'https://sdk.twilio.com/js/client/sounds/releases/1.0.0';
 exports.SOUNDS_BASE_URL = SOUNDS_BASE_URL;
@@ -2704,7 +2954,7 @@ exports.COWBELL_AUDIO_URL = COWBELL_AUDIO_URL;
 var ECHO_TEST_DURATION = 20000;
 exports.ECHO_TEST_DURATION = ECHO_TEST_DURATION;
 
-},{}],10:[function(require,module,exports){
+},{}],11:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -2752,7 +3002,7 @@ var Deferred = /** @class */ (function () {
 }());
 exports.default = Deferred;
 
-},{}],11:[function(require,module,exports){
+},{}],12:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -2824,6 +3074,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 var events_1 = require("events");
 var loglevel_1 = require("loglevel");
 var audiohelper_1 = require("./audiohelper");
+var audioprocessoreventobserver_1 = require("./audioprocessoreventobserver");
 var call_1 = require("./call");
 var C = require("./constants");
 var dialtonePlayer_1 = require("./dialtonePlayer");
@@ -2866,6 +3117,10 @@ var Device = /** @class */ (function (_super) {
          * The AudioHelper instance associated with this {@link Device}.
          */
         _this._audio = null;
+        /**
+         * The AudioProcessorEventObserver instance to use
+         */
+        _this._audioProcessorEventObserver = null;
         /**
          * An audio input MediaStream to pass to new {@link Call} instances.
          */
@@ -2916,7 +3171,7 @@ var Device = /** @class */ (function (_super) {
         /**
          * An instance of Logger to use.
          */
-        _this._log = log_1.default.getInstance();
+        _this._log = new log_1.default('Device');
         /**
          * The options passed to {@link Device} constructor or {@link Device.updateOptions}.
          */
@@ -3003,16 +3258,6 @@ var Device = /** @class */ (function (_super) {
             return payload;
         };
         /**
-         * Called after a successful getUserMedia call
-         */
-        _this._onGetUserMedia = function () {
-            var _a;
-            (_a = _this._audio) === null || _a === void 0 ? void 0 : _a._updateAvailableDevices().catch(function (error) {
-                // Ignore error, we don't want to break the call flow
-                _this._log.warn('Unable to updateAvailableDevices after gUM call', error);
-            });
-        };
-        /**
          * Called when a 'close' event is received from the signaling stream.
          */
         _this._onSignalingClose = function () {
@@ -3036,6 +3281,7 @@ var Device = /** @class */ (function (_super) {
                     var ttlMs = payload.token.ttl * 1000;
                     var timeoutMs = Math.max(0, ttlMs - _this._options.tokenRefreshMs);
                     _this._tokenWillExpireTimeout = setTimeout(function () {
+                        _this._log.debug('#tokenWillExpire');
                         _this.emit('tokenWillExpire', _this);
                         if (_this._tokenWillExpireTimeout) {
                             clearTimeout(_this._tokenWillExpireTimeout);
@@ -3050,7 +3296,7 @@ var Device = /** @class */ (function (_super) {
                 _this._preferredURI = regions_1.createSignalingEndpointURL(preferredURI);
             }
             else {
-                _this._log.info('Could not parse a preferred URI from the stream#connected event.');
+                _this._log.warn('Could not parse a preferred URI from the stream#connected event.');
             }
             // The signaling stream emits a `connected` event after reconnection, if the
             // device was registered before this, then register again.
@@ -3095,7 +3341,8 @@ var Device = /** @class */ (function (_super) {
                 _this._log.error('Unknown signaling error: ', originalError);
                 twilioError = new errors_1.GeneralErrors.UnknownError(customMessage, originalError);
             }
-            _this._log.info('Received error: ', twilioError);
+            _this._log.error('Received error: ', twilioError);
+            _this._log.debug('#error', originalError);
             _this.emit(Device.EventName.Error, twilioError, call);
         };
         /**
@@ -3114,6 +3361,7 @@ var Device = /** @class */ (function (_super) {
                             return [2 /*return*/];
                         }
                         if (!payload.callsid || !payload.sdp) {
+                            this._log.debug('#error', payload);
                             this.emit(Device.EventName.Error, new errors_1.ClientErrors.BadRequest('Malformed invite from gateway'));
                             return [2 /*return*/];
                         }
@@ -3212,6 +3460,9 @@ var Device = /** @class */ (function (_super) {
                 throw error;
             });
         };
+        // Setup loglevel asap to avoid missed logs
+        _this._setupLoglevel(options.logLevel);
+        _this._logOptions('constructor', options);
         _this.updateToken(token);
         if (util_1.isLegacyEdge()) {
             throw new errors_1.NotSupportedError('Microsoft Edge Legacy (https://support.microsoft.com/en-us/help/4533505/what-is-microsoft-edge-legacy) ' +
@@ -3379,6 +3630,7 @@ var Device = /** @class */ (function (_super) {
             return __generator(this, function (_b) {
                 switch (_b.label) {
                     case 0:
+                        this._log.debug('.connect', JSON.stringify(options && options.params || {}), options);
                         this._throwIfDestroyed();
                         if (this._activeCall) {
                             throw new errors_1.InvalidStateError('A Call is already active');
@@ -3416,14 +3668,14 @@ var Device = /** @class */ (function (_super) {
      * Destroy the {@link Device}, freeing references to be garbage collected.
      */
     Device.prototype.destroy = function () {
+        var _a;
+        this._log.debug('.destroy');
         this.disconnectAll();
         this._stopRegistrationTimer();
-        if (this._audio) {
-            this._audio._unbind();
-        }
         this._destroyStream();
         this._destroyPublisher();
         this._destroyAudioHelper();
+        (_a = this._audioProcessorEventObserver) === null || _a === void 0 ? void 0 : _a.destroy();
         if (this._networkInformation && typeof this._networkInformation.removeEventListener === 'function') {
             this._networkInformation.removeEventListener('change', this._publishNetworkChange);
         }
@@ -3439,6 +3691,7 @@ var Device = /** @class */ (function (_super) {
      * Disconnect all {@link Call}s.
      */
     Device.prototype.disconnectAll = function () {
+        this._log.debug('.disconnectAll');
         var calls = this._calls.splice(0);
         calls.forEach(function (call) { return call.disconnect(); });
         if (this._activeCall) {
@@ -3498,10 +3751,12 @@ var Device = /** @class */ (function (_super) {
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
+                        this._log.debug('.register');
                         if (this.state !== Device.State.Unregistered) {
                             throw new errors_1.InvalidStateError("Attempt to register when device is in state \"" + this.state + "\". " +
                                 ("Must be \"" + Device.State.Unregistered + "\"."));
                         }
+                        this._shouldReRegister = false;
                         this._setState(Device.State.Registering);
                         return [4 /*yield*/, (this._streamConnectedPromise || this._setupStream())];
                     case 1:
@@ -3557,6 +3812,7 @@ var Device = /** @class */ (function (_super) {
             return __generator(this, function (_a) {
                 switch (_a.label) {
                     case 0:
+                        this._log.debug('.unregister');
                         if (this.state !== Device.State.Registered) {
                             throw new errors_1.InvalidStateError("Attempt to unregister when device is in state \"" + this.state + "\". " +
                                 ("Must be \"" + Device.State.Registered + "\"."));
@@ -3585,6 +3841,7 @@ var Device = /** @class */ (function (_super) {
      */
     Device.prototype.updateOptions = function (options) {
         if (options === void 0) { options = {}; }
+        this._logOptions('updateOptions', options);
         if (this.state === Device.State.Destroyed) {
             throw new errors_1.InvalidStateError("Attempt to \"updateOptions\" when device is in state \"" + this.state + "\".");
         }
@@ -3607,9 +3864,7 @@ var Device = /** @class */ (function (_super) {
         if (this.isBusy && hasChunderURIsChanged) {
             throw new errors_1.InvalidStateError('Cannot change Edge while on an active Call');
         }
-        this._log.setDefaultLevel(typeof this._options.logLevel === 'number'
-            ? this._options.logLevel
-            : loglevel_1.levels.ERROR);
+        this._setupLoglevel(this._options.logLevel);
         if (this._options.dscp) {
             if (!this._options.rtcConstraints) {
                 this._options.rtcConstraints = {};
@@ -3649,6 +3904,7 @@ var Device = /** @class */ (function (_super) {
      * @param token
      */
     Device.prototype.updateToken = function (token) {
+        this._log.debug('.updateToken');
         if (this.state === Device.State.Destroyed) {
             throw new errors_1.InvalidStateError("Attempt to \"updateToken\" when device is in state \"" + this.state + "\".");
         }
@@ -3686,7 +3942,7 @@ var Device = /** @class */ (function (_super) {
         if (!this._audio) {
             return;
         }
-        this._audio.removeAllListeners();
+        this._audio._destroy();
         this._audio = null;
     };
     /**
@@ -3725,6 +3981,50 @@ var Device = /** @class */ (function (_super) {
             || call.outboundConnectionId === callSid; }) || null;
     };
     /**
+     * Utility function to log device options
+     */
+    Device.prototype._logOptions = function (caller, options) {
+        if (options === void 0) { options = {}; }
+        // Selectively log options that users can modify.
+        // Also, convert user overrides.
+        // This prevents potential app crash when calling JSON.stringify
+        // and when sending log strings remotely
+        var userOptions = [
+            'allowIncomingWhileBusy',
+            'appName',
+            'appVersion',
+            'closeProtection',
+            'codecPreferences',
+            'disableAudioContextSounds',
+            'dscp',
+            'edge',
+            'enableImprovedSignalingErrorPrecision',
+            'forceAggressiveIceNomination',
+            'logLevel',
+            'maxAverageBitrate',
+            'maxCallSignalingTimeoutMs',
+            'sounds',
+            'tokenRefreshMs',
+        ];
+        var userOptionOverrides = [
+            'RTCPeerConnection',
+            'enumerateDevices',
+            'getUserMedia',
+        ];
+        if (typeof options === 'object') {
+            var toLog_1 = __assign({}, options);
+            Object.keys(toLog_1).forEach(function (key) {
+                if (!userOptions.includes(key) && !userOptionOverrides.includes(key)) {
+                    delete toLog_1[key];
+                }
+                if (userOptionOverrides.includes(key)) {
+                    toLog_1[key] = true;
+                }
+            });
+            this._log.debug("." + caller, JSON.stringify(toLog_1));
+        }
+    };
+    /**
      * Create a new {@link Call}.
      * @param twimlParams - A flat object containing key:value pairs to be sent to the TwiML app.
      * @param options - Options to be used to instantiate the {@link Call}.
@@ -3742,7 +4042,6 @@ var Device = /** @class */ (function (_super) {
                         }
                         _a = {
                             audioHelper: this._audio,
-                            getUserMedia: this._options.getUserMedia || getusermedia_1.default,
                             isUnifiedPlanDefault: Device._isUnifiedPlanDefault,
                             onIgnore: function () {
                                 _this._soundcache.get(Device.SoundName.Incoming).stop();
@@ -3761,8 +4060,8 @@ var Device = /** @class */ (function (_super) {
                                 if (!_this._activeCall || _this._activeCall === currentCall) {
                                     return;
                                 }
-                                // this._activeCall.disconnect();
-                                // this._removeCall(this._activeCall);
+                                _this._activeCall.disconnect();
+                                _this._removeCall(_this._activeCall);
                             },
                             codecPreferences: this._options.codecPreferences,
                             customSounds: this._options.sounds,
@@ -3773,7 +4072,6 @@ var Device = /** @class */ (function (_super) {
                             getInputStream: function () { return _this._options.fileInputStream || _this._callInputStream; },
                             getSinkIds: function () { return _this._callSinkIds; },
                             maxAverageBitrate: this._options.maxAverageBitrate,
-                            onGetUserMedia: function () { return _this._onGetUserMedia(); },
                             preflight: this._options.preflight,
                             rtcConstraints: this._options.rtcConstraints,
                             shouldPlayDisconnect: function () { var _a; return (_a = _this._audio) === null || _a === void 0 ? void 0 : _a.disconnect(); },
@@ -3931,23 +4229,34 @@ var Device = /** @class */ (function (_super) {
             return;
         }
         this._state = state;
-        this.emit(this._stateEventMapping[state]);
+        var name = this._stateEventMapping[state];
+        this._log.debug("#" + name);
+        this.emit(name);
     };
     /**
      * Set up an audio helper for usage by this {@link Device}.
      */
     Device.prototype._setupAudioHelper = function () {
         var _this = this;
+        if (!this._audioProcessorEventObserver) {
+            this._audioProcessorEventObserver = new audioprocessoreventobserver_1.AudioProcessorEventObserver();
+            this._audioProcessorEventObserver.on('event', function (_a) {
+                var name = _a.name, group = _a.group;
+                _this._publisher.info(group, name, {}, _this._activeCall);
+            });
+        }
         var audioOptions = {
             audioContext: Device.audioContext,
+            audioProcessorEventObserver: this._audioProcessorEventObserver,
             enumerateDevices: this._options.enumerateDevices,
+            getUserMedia: this._options.getUserMedia || getusermedia_1.default,
         };
         if (this._audio) {
-            this._log.info('Found existing audio helper; destroying...');
-            audioOptions.enabledSounds = this._audio._getEnabledSounds();
-            this._destroyAudioHelper();
+            this._log.info('Found existing audio helper; updating options...');
+            this._audio._updateUserOptions(audioOptions);
+            return;
         }
-        this._audio = new (this._options.AudioHelper || audiohelper_1.default)(this._updateSinkIds, this._updateInputStream, this._options.getUserMedia || getusermedia_1.default, audioOptions);
+        this._audio = new (this._options.AudioHelper || audiohelper_1.default)(this._updateSinkIds, this._updateInputStream, audioOptions);
         this._audio.on('deviceChange', function (lostActiveDevices) {
             var activeCall = _this._activeCall;
             var deviceIds = lostActiveDevices.map(function (device) { return device.deviceId; });
@@ -3960,6 +4269,16 @@ var Device = /** @class */ (function (_super) {
         });
     };
     /**
+     * Setup logger's loglevel
+     */
+    Device.prototype._setupLoglevel = function (logLevel) {
+        var level = typeof logLevel === 'number' ||
+            typeof logLevel === 'string' ?
+            logLevel : loglevel_1.levels.ERROR;
+        this._log.setDefaultLevel(level);
+        this._log.info('Set logger default level to', level);
+    };
+    /**
      * Create and set a publisher for the {@link Device} to use.
      */
     Device.prototype._setupPublisher = function () {
@@ -3970,7 +4289,6 @@ var Device = /** @class */ (function (_super) {
         }
         var publisherOptions = {
             defaultPayload: this._createDefaultPayload,
-            log: this._log,
             metadata: {
                 app_name: this._options.appName,
                 app_version: this._options.appVersion,
@@ -4037,9 +4355,13 @@ var Device = /** @class */ (function (_super) {
                 }, RINGTONE_PLAY_TIMEOUT);
             }),
         ]).catch(function (reason) {
-            _this._log.info(reason.message);
+            _this._log.warn(reason.message);
         }).then(function () {
             clearTimeout(timeout);
+            _this._log.debug('#incoming', JSON.stringify({
+                customParameters: call.customParameters,
+                parameters: call.parameters,
+            }));
             _this.emit(Device.EventName.Incoming, call);
         });
     };
@@ -4158,7 +4480,7 @@ var Device = /** @class */ (function (_super) {
 })(Device || (Device = {}));
 exports.default = Device;
 
-},{"./audiohelper":3,"./call":8,"./constants":9,"./dialtonePlayer":12,"./errors":14,"./eventpublisher":16,"./log":17,"./preflight/preflight":19,"./pstream":20,"./regions":21,"./rtc":25,"./rtc/getusermedia":23,"./sound":33,"./util":35,"./uuid":36,"events":38,"loglevel":42}],12:[function(require,module,exports){
+},{"./audiohelper":3,"./audioprocessoreventobserver":7,"./call":9,"./constants":10,"./dialtonePlayer":13,"./errors":15,"./eventpublisher":17,"./log":18,"./preflight/preflight":20,"./pstream":21,"./regions":22,"./rtc":26,"./rtc/getusermedia":24,"./sound":34,"./util":36,"./uuid":37,"events":39,"loglevel":43}],13:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -4234,7 +4556,7 @@ var DialtonePlayer = /** @class */ (function () {
 }());
 exports.default = DialtonePlayer;
 
-},{"./errors":14}],13:[function(require,module,exports){
+},{"./errors":15}],14:[function(require,module,exports){
 "use strict";
 /* tslint:disable max-classes-per-file max-line-length */
 /**
@@ -5285,7 +5607,7 @@ exports.errorsByCode = new Map([
 ]);
 Object.freeze(exports.errorsByCode);
 
-},{"./twilioError":15}],14:[function(require,module,exports){
+},{"./twilioError":16}],15:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -5428,7 +5750,7 @@ function hasErrorByCode(code) {
 }
 exports.hasErrorByCode = hasErrorByCode;
 
-},{"./generated":13}],15:[function(require,module,exports){
+},{"./generated":14}],16:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -5469,7 +5791,7 @@ var TwilioError = /** @class */ (function (_super) {
 }(Error));
 exports.default = TwilioError;
 
-},{}],16:[function(require,module,exports){
+},{}],17:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -5492,6 +5814,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 // @ts-nocheck
 var events_1 = require("events");
+var log_1 = require("./log");
 var request_1 = require("./request");
 /**
  * Builds Endpoint Analytics (EA) event payloads and sends them to
@@ -5539,7 +5862,7 @@ var EventPublisher = /** @class */ (function (_super) {
                 get: function () { return isEnabled; },
                 set: function (_isEnabled) { isEnabled = _isEnabled; },
             },
-            _log: { value: options.log },
+            _log: { value: new log_1.default('EventPublisher') },
             _request: { value: options.request || request_1.default, writable: true },
             _token: { value: token, writable: true },
             isEnabled: {
@@ -5577,9 +5900,18 @@ var EventPublisher = /** @class */ (function (_super) {
 EventPublisher.prototype._post = function _post(endpointName, level, group, name, payload, connection, force) {
     var _this = this;
     if ((!this.isEnabled && !force) || !this._host) {
+        this._log.debug('Publishing cancelled', JSON.stringify({ isEnabled: this.isEnabled, force: force, host: this._host }));
         return Promise.resolve();
     }
     if (!connection || ((!connection.parameters || !connection.parameters.CallSid) && !connection.outboundConnectionId)) {
+        if (!connection) {
+            this._log.debug('Publishing cancelled. Missing connection object');
+        }
+        else {
+            this._log.debug('Publishing cancelled. Missing connection info', JSON.stringify({
+                outboundConnectionId: connection.outboundConnectionId, parameters: connection.parameters,
+            }));
+        }
         return Promise.resolve();
     }
     var event = {
@@ -5595,6 +5927,9 @@ EventPublisher.prototype._post = function _post(endpointName, level, group, name
     };
     if (this.metadata) {
         event.publisher_metadata = this.metadata;
+    }
+    if (endpointName === 'EndpointEvents') {
+        this._log.debug('Publishing insights', JSON.stringify({ endpointName: endpointName, event: event, force: force, host: this._host }));
     }
     var requestParams = {
         body: event,
@@ -5615,7 +5950,7 @@ EventPublisher.prototype._post = function _post(endpointName, level, group, name
             }
         });
     }).catch(function (e) {
-        _this._log.warn("Unable to post " + group + " " + name + " event to Insights. Received error: " + e);
+        _this._log.error("Unable to post " + group + " " + name + " event to Insights. Received error: " + e);
     });
 };
 /**
@@ -5751,45 +6086,56 @@ function formatMetric(sample) {
 }
 exports.default = EventPublisher;
 
-},{"./request":22,"events":38}],17:[function(require,module,exports){
+},{"./log":18,"./request":23,"events":39}],18:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
  * @module Voice
  * @internalapi
  */
+var __spreadArrays = (this && this.__spreadArrays) || function () {
+    for (var s = 0, i = 0, il = arguments.length; i < il; i++) s += arguments[i].length;
+    for (var r = Array(s), k = 0, i = 0; i < il; i++)
+        for (var a = arguments[i], j = 0, jl = a.length; j < jl; j++, k++)
+            r[k] = a[j];
+    return r;
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Logger = void 0;
 var LogLevelModule = require("loglevel");
 var constants_1 = require("./constants");
 /**
- * {@link Log} provides logging features throught the sdk using loglevel module
+ * {@link Log} provides logging features throughout the sdk using loglevel module
  * See https://github.com/pimterry/loglevel for documentation
+ * @private
  */
 var Log = /** @class */ (function () {
     /**
      * @constructor
+     * @param [tag] - tag name for the logs
      * @param [options] - Optional settings
      */
-    function Log(options) {
-        try {
-            this._log = (options && options.LogLevelModule ? options.LogLevelModule : LogLevelModule).getLogger(constants_1.PACKAGE_NAME);
-        }
-        catch (_a) {
-            // tslint:disable-next-line
-            console.warn('Cannot create custom logger');
-            this._log = console;
-        }
+    function Log(tag, options) {
+        this._log = Log.getLogLevelInstance(options);
+        this._prefix = "[TwilioVoice][" + tag + "]";
     }
     /**
-     * Create the logger singleton instance if it doesn't exists
-     * @returns The singleton {@link Log} instance
+     * Return the `loglevel` instance maintained internally.
+     * @param [options] - Optional settings
+     * @returns The `loglevel` instance.
      */
-    Log.getInstance = function () {
-        if (!Log.instance) {
-            Log.instance = new Log();
+    Log.getLogLevelInstance = function (options) {
+        if (!Log.loglevelInstance) {
+            try {
+                Log.loglevelInstance = (options && options.LogLevelModule ? options.LogLevelModule : LogLevelModule).getLogger(constants_1.PACKAGE_NAME);
+            }
+            catch (_a) {
+                // tslint:disable-next-line
+                console.warn('Cannot create custom logger');
+                Log.loglevelInstance = console;
+            }
         }
-        return Log.instance;
+        return Log.loglevelInstance;
     };
     /**
      * Log a debug message
@@ -5801,7 +6147,7 @@ var Log = /** @class */ (function () {
         for (var _i = 0; _i < arguments.length; _i++) {
             args[_i] = arguments[_i];
         }
-        (_a = this._log).debug.apply(_a, args);
+        (_a = this._log).debug.apply(_a, __spreadArrays([this._prefix], args));
     };
     /**
      * Log an error message
@@ -5813,14 +6159,7 @@ var Log = /** @class */ (function () {
         for (var _i = 0; _i < arguments.length; _i++) {
             args[_i] = arguments[_i];
         }
-        (_a = this._log).error.apply(_a, args);
-    };
-    /**
-     * Return the `loglevel` instance maintained internally.
-     * @returns The `loglevel` instance.
-     */
-    Log.prototype.getLogLevelInstance = function () {
-        return this._log;
+        (_a = this._log).error.apply(_a, __spreadArrays([this._prefix], args));
     };
     /**
      * Log an info message
@@ -5832,7 +6171,7 @@ var Log = /** @class */ (function () {
         for (var _i = 0; _i < arguments.length; _i++) {
             args[_i] = arguments[_i];
         }
-        (_a = this._log).info.apply(_a, args);
+        (_a = this._log).info.apply(_a, __spreadArrays([this._prefix], args));
     };
     /**
      * Set a default log level to disable all logging below the given level
@@ -5856,7 +6195,7 @@ var Log = /** @class */ (function () {
         for (var _i = 0; _i < arguments.length; _i++) {
             args[_i] = arguments[_i];
         }
-        (_a = this._log).warn.apply(_a, args);
+        (_a = this._log).warn.apply(_a, __spreadArrays([this._prefix], args));
     };
     /**
      * Log levels
@@ -5864,10 +6203,10 @@ var Log = /** @class */ (function () {
     Log.levels = LogLevelModule.levels;
     return Log;
 }());
-exports.Logger = Log.getInstance().getLogLevelInstance();
+exports.Logger = Log.getLogLevelInstance();
 exports.default = Log;
 
-},{"./constants":9,"loglevel":42}],18:[function(require,module,exports){
+},{"./constants":10,"loglevel":43}],19:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -5876,6 +6215,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
  */
 var constants_1 = require("./constants");
 var errors_1 = require("./errors");
+var log_1 = require("./log");
 var DEFAULT_TEST_SOUND_URL = constants_1.SOUNDS_BASE_URL + "/outgoing.mp3";
 /**
  * A smart collection containing a Set of active output devices.
@@ -5894,6 +6234,10 @@ var OutputDeviceCollection = /** @class */ (function () {
          * The currently active output devices.
          */
         this._activeDevices = new Set();
+        /**
+         * An instance of Logger to use.
+         */
+        this._log = new log_1.default('OutputDeviceCollection');
     }
     /**
      * Delete a device from the collection. If no devices remain, the 'default'
@@ -5903,6 +6247,7 @@ var OutputDeviceCollection = /** @class */ (function () {
      * @returns whether the device was present before it was deleted
      */
     OutputDeviceCollection.prototype.delete = function (device) {
+        this._log.debug('.delete', device);
         var wasDeleted = !!(this._activeDevices.delete(device));
         var defaultDevice = this._availableDevices.get('default')
             || Array.from(this._availableDevices.values())[0];
@@ -5929,6 +6274,7 @@ var OutputDeviceCollection = /** @class */ (function () {
      */
     OutputDeviceCollection.prototype.set = function (deviceIdOrIds) {
         var _this = this;
+        this._log.debug('.set', deviceIdOrIds);
         if (!this._isSupported) {
             return Promise.reject(new errors_1.NotSupportedError('This browser does not support audio output selection'));
         }
@@ -5982,7 +6328,7 @@ var OutputDeviceCollection = /** @class */ (function () {
 }());
 exports.default = OutputDeviceCollection;
 
-},{"./constants":9,"./errors":14}],19:[function(require,module,exports){
+},{"./constants":10,"./errors":15,"./log":18}],20:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -6056,6 +6402,7 @@ var events_1 = require("events");
 var call_1 = require("../call");
 var device_1 = require("../device");
 var errors_1 = require("../errors");
+var log_1 = require("../log");
 var stats_1 = require("../rtc/stats");
 var constants_1 = require("../constants");
 /**
@@ -6075,6 +6422,10 @@ var PreflightTest = /** @class */ (function (_super) {
          * Whether this test has already logged an insights-connection-warning.
          */
         _this._hasInsightsErrored = false;
+        /**
+         * An instance of Logger to use.
+         */
+        _this._log = new log_1.default('PreflightTest');
         /**
          * Network related timing measurements for this test
          */
@@ -6099,6 +6450,35 @@ var PreflightTest = /** @class */ (function (_super) {
         _this._startTime = Date.now();
         _this._initDevice(token, __assign(__assign({}, _this._options), { fileInputStream: _this._options.fakeMicInput ?
                 _this._getStreamFromFile() : undefined }));
+        // Device sets the loglevel so start logging after initializing the device.
+        // Then selectively log options that users can modify.
+        var userOptions = [
+            'codecPreferences',
+            'edge',
+            'fakeMicInput',
+            'logLevel',
+            'signalingTimeoutMs',
+        ];
+        var userOptionOverrides = [
+            'audioContext',
+            'deviceFactory',
+            'fileInputStream',
+            'getRTCIceCandidateStatsReport',
+            'iceServers',
+            'rtcConfiguration',
+        ];
+        if (typeof options === 'object') {
+            var toLog_1 = __assign({}, options);
+            Object.keys(toLog_1).forEach(function (key) {
+                if (!userOptions.includes(key) && !userOptionOverrides.includes(key)) {
+                    delete toLog_1[key];
+                }
+                if (userOptionOverrides.includes(key)) {
+                    toLog_1[key] = true;
+                }
+            });
+            _this._log.debug('.constructor', JSON.stringify(toLog_1));
+        }
         return _this;
     }
     /**
@@ -6106,6 +6486,7 @@ var PreflightTest = /** @class */ (function (_super) {
      */
     PreflightTest.prototype.stop = function () {
         var _this = this;
+        this._log.debug('.stop');
         var error = new errors_1.GeneralErrors.CallCancelledError();
         if (this._device) {
             this._device.once(device_1.default.EventName.Unregistered, function () { return _this._onFailed(error); });
@@ -6124,6 +6505,7 @@ var PreflightTest = /** @class */ (function (_super) {
             warning.rtcWarning = rtcWarning;
         }
         this._warnings.push(warning);
+        this._log.debug("#" + PreflightTest.Events.Warning, JSON.stringify(warning));
         this.emit(PreflightTest.Events.Warning, warning);
     };
     /**
@@ -6322,6 +6704,7 @@ var PreflightTest = /** @class */ (function (_super) {
         this._releaseHandlers();
         this._endTime = Date.now();
         this._status = PreflightTest.Status.Failed;
+        this._log.debug("#" + PreflightTest.Events.Failed, error);
         this.emit(PreflightTest.Events.Failed, error);
     };
     /**
@@ -6343,6 +6726,7 @@ var PreflightTest = /** @class */ (function (_super) {
             _this._endTime = Date.now();
             _this._status = PreflightTest.Status.Completed;
             _this._report = _this._getReport();
+            _this._log.debug("#" + PreflightTest.Events.Completed, JSON.stringify(_this._report));
             _this.emit(PreflightTest.Events.Completed, _this._report);
         }, 10);
     };
@@ -6376,6 +6760,7 @@ var PreflightTest = /** @class */ (function (_super) {
         call.once('accept', function () {
             _this._callSid = call['_mediaHandler'].callSid;
             _this._status = PreflightTest.Status.Connected;
+            _this._log.debug("#" + PreflightTest.Events.Connected);
             _this.emit(PreflightTest.Events.Connected);
         });
         call.on('sample', function (sample) { return __awaiter(_this, void 0, void 0, function () {
@@ -6392,6 +6777,7 @@ var PreflightTest = /** @class */ (function (_super) {
                     case 2:
                         this._latestSample = sample;
                         this._samples.push(sample);
+                        this._log.debug("#" + PreflightTest.Events.Sample, JSON.stringify(sample));
                         this.emit(PreflightTest.Events.Sample, sample);
                         return [2 /*return*/];
                 }
@@ -6571,7 +6957,7 @@ exports.PreflightTest = PreflightTest;
 })(PreflightTest = exports.PreflightTest || (exports.PreflightTest = {}));
 exports.PreflightTest = PreflightTest;
 
-},{"../call":8,"../constants":9,"../device":11,"../errors":14,"../rtc/stats":31,"events":38}],20:[function(require,module,exports){
+},{"../call":9,"../constants":10,"../device":12,"../errors":15,"../log":18,"../rtc/stats":32,"events":39}],21:[function(require,module,exports){
 "use strict";
 var __extends = (this && this.__extends) || (function () {
     var extendStatics = function (d, b) {
@@ -6643,7 +7029,7 @@ var PStream = /** @class */ (function (_super) {
         _this._handleTransportError = _this._handleTransportError.bind(_this);
         _this._handleTransportMessage = _this._handleTransportMessage.bind(_this);
         _this._handleTransportOpen = _this._handleTransportOpen.bind(_this);
-        _this._log = log_1.default.getInstance();
+        _this._log = new log_1.default('PStream');
         // NOTE(mroberts): EventEmitter requires that we catch all errors.
         _this.on('error', function () {
             _this._log.warn('Unexpected error handled in pstream');
@@ -6857,7 +7243,7 @@ function getBrowserInfo() {
 }
 exports.default = PStream;
 
-},{"./constants":9,"./errors":14,"./log":17,"./wstransport":37,"events":38}],21:[function(require,module,exports){
+},{"./constants":10,"./errors":15,"./log":18,"./wstransport":38,"events":39}],22:[function(require,module,exports){
 "use strict";
 var _a;
 Object.defineProperty(exports, "__esModule", { value: true });
@@ -7052,7 +7438,7 @@ function getRegionShortcode(region) {
 }
 exports.getRegionShortcode = getRegionShortcode;
 
-},{"./errors":14}],22:[function(require,module,exports){
+},{"./errors":15}],23:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -7101,7 +7487,7 @@ Request.post = function post(params, callback) {
 };
 exports.default = Request;
 
-},{}],23:[function(require,module,exports){
+},{}],24:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -7143,7 +7529,7 @@ function getUserMedia(constraints, options) {
 }
 exports.default = getUserMedia;
 
-},{"../errors":14,"../util":35}],24:[function(require,module,exports){
+},{"../errors":15,"../util":36}],25:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -7207,7 +7593,7 @@ var IceCandidate = /** @class */ (function () {
 }());
 exports.IceCandidate = IceCandidate;
 
-},{}],25:[function(require,module,exports){
+},{}],26:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PeerConnection = exports.getMediaEngine = exports.enabled = void 0;
@@ -7229,7 +7615,7 @@ function getMediaEngine() {
 }
 exports.getMediaEngine = getMediaEngine;
 
-},{"./peerconnection":28,"./rtcpc":29}],26:[function(require,module,exports){
+},{"./peerconnection":29,"./rtcpc":30}],27:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -7640,7 +8026,7 @@ function isPresent(report, statName) {
 }
 exports.default = MockRTCStatsReport;
 
-},{}],27:[function(require,module,exports){
+},{}],28:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -7713,7 +8099,7 @@ exports.default = {
     isNonNegativeNumber: isNonNegativeNumber,
 };
 
-},{}],28:[function(require,module,exports){
+},{}],29:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -7740,14 +8126,14 @@ var VOLUME_INTERVAL_MS = 50;
  * @return {PeerConnection}
  * @constructor
  */
-function PeerConnection(audioHelper, pstream, getUserMedia, options) {
-    if (!audioHelper || !pstream || !getUserMedia) {
-        throw new errors_1.InvalidArgumentError('Audiohelper, pstream and getUserMedia are required arguments');
+function PeerConnection(audioHelper, pstream, options) {
+    if (!audioHelper || !pstream) {
+        throw new errors_1.InvalidArgumentError('Audiohelper, and pstream are required arguments');
     }
     if (!(this instanceof PeerConnection)) {
-        return new PeerConnection(audioHelper, pstream, getUserMedia, options);
+        return new PeerConnection(audioHelper, pstream, options);
     }
-    this._log = log_1.default.getInstance();
+    this._log = new log_1.default('PeerConnection');
     function noop() {
         this._log.warn('Unexpected noop call in peerconnection');
     }
@@ -7776,7 +8162,6 @@ function PeerConnection(audioHelper, pstream, getUserMedia, options) {
     this.status = 'connecting';
     this.callSid = null;
     this.isMuted = false;
-    this.getUserMedia = getUserMedia;
     var AudioContext = typeof window !== 'undefined'
         && (window.AudioContext || window.webkitAudioContext);
     this._isSinkSupported = !!AudioContext &&
@@ -7785,6 +8170,7 @@ function PeerConnection(audioHelper, pstream, getUserMedia, options) {
     // after 6 instances an exception is thrown. Refer https://www.w3.org/2011/audio/track/issues/3.
     // In order to get around it, we are re-using the Device's AudioContext.
     this._audioContext = AudioContext && audioHelper._audioContext;
+    this._audioHelper = audioHelper;
     this._hasIceCandidates = false;
     this._hasIceGatheringFailures = false;
     this._iceGatheringTimeoutId = null;
@@ -7817,8 +8203,8 @@ PeerConnection.prototype.uri = function () {
  *   and will therefore be managed and destroyed internally.
  * @param {MediaStreamConstraints} constraints
  */
-PeerConnection.prototype.openWithConstraints = function (constraints) {
-    return this.getUserMedia({ audio: constraints })
+PeerConnection.prototype.openDefaultDeviceWithConstraints = function (constraints) {
+    return this._audioHelper._openDefaultDeviceWithConstraints(constraints)
         .then(this._setInputTracksFromStream.bind(this, false));
 };
 /**
@@ -7895,24 +8281,13 @@ PeerConnection.prototype._startPollingVolume = function () {
         setTimeout(emitVolume, VOLUME_INTERVAL_MS);
     }, VOLUME_INTERVAL_MS);
 };
-PeerConnection.prototype._stopStream = function _stopStream(stream) {
+PeerConnection.prototype._stopStream = function _stopStream() {
     // We shouldn't stop the tracks if they were not created inside
     //   this PeerConnection.
     if (!this._shouldManageStream) {
         return;
     }
-    if (typeof MediaStreamTrack.prototype.stop === 'function') {
-        var audioTracks = typeof stream.getAudioTracks === 'function'
-            ? stream.getAudioTracks() : stream.audioTracks;
-        audioTracks.forEach(function (track) {
-            track.stop();
-        });
-    }
-    else {
-        // NOTE(mroberts): This is just a fallback to any ancient browsers that may
-        // not implement MediaStreamTrack.stop.
-        stream.stop();
-    }
+    this._audioHelper._stopDefaultInputDeviceStream();
 };
 /**
  * Update the stream source with the new input audio stream.
@@ -7993,7 +8368,7 @@ PeerConnection.prototype._setInputTracksForPlanB = function (shouldClone, newStr
         this.stream = shouldClone ? cloneStream(newStream) : newStream;
     }
     else {
-        this._stopStream(localStream);
+        this._stopStream();
         removeStream(this.version.pc, localStream);
         localStream.getAudioTracks().forEach(localStream.removeTrack, localStream);
         newStream.getAudioTracks().forEach(localStream.addTrack, localStream);
@@ -8046,13 +8421,14 @@ PeerConnection.prototype._setInputTracksForUnifiedPlan = function (shouldClone, 
         // If the call was started with gUM, and we are now replacing that track with an
         // external stream's tracks, we should stop the old managed track.
         if (this._shouldManageStream) {
-            this._stopStream(localStream);
+            this._stopStream();
         }
         if (!this._sender) {
             this._sender = this.version.pc.getSenders()[0];
         }
         return this._sender.replaceTrack(newStream.getAudioTracks()[0]).then(function () {
             _this._updateInputStreamSource(newStream);
+            _this.stream = shouldClone ? cloneStream(newStream) : newStream;
             return getStreamPromise();
         });
     }
@@ -8067,7 +8443,7 @@ PeerConnection.prototype._onInputDevicesChanged = function () {
     // We only want to act if we manage the stream in PeerConnection (It was created
     // here, rather than passed in.)
     if (activeInputWasLost && this._shouldManageStream) {
-        this.openWithConstraints(true);
+        this.openDefaultDeviceWithConstraints({ audio: true });
     }
 };
 PeerConnection.prototype._onIceGatheringFailure = function (type) {
@@ -8101,12 +8477,12 @@ PeerConnection.prototype._onMediaConnectionStateChange = function (newState) {
             break;
         case 'disconnected':
             message = 'ICE liveliness check failed. May be having trouble connecting to Twilio';
-            this._log.info(message);
+            this._log.warn(message);
             this.ondisconnected(message);
             break;
         case 'failed':
             message = 'Connection with Twilio was interrupted.';
-            this._log.info(message);
+            this._log.warn(message);
             this.onfailed(message);
             break;
     }
@@ -8471,7 +8847,7 @@ PeerConnection.prototype.iceRestart = function () {
             if (!payload.sdp || _this.version.pc.signalingState !== 'have-local-offer') {
                 var message = 'Invalid state or param during ICE Restart:'
                     + ("hasSdp:" + !!payload.sdp + ", signalingState:" + _this.version.pc.signalingState);
-                _this._log.info(message);
+                _this._log.warn(message);
                 return;
             }
             var sdp = _this._maybeSetIceAggressiveNomination(payload.sdp);
@@ -8479,7 +8855,7 @@ PeerConnection.prototype.iceRestart = function () {
             if (_this.status !== 'closed') {
                 _this.version.processAnswer(_this.codecPreferences, sdp, null, function (err) {
                     var message = err && err.message ? err.message : err;
-                    _this._log.info("Failed to process answer during ICE Restart. Error: " + message);
+                    _this._log.error("Failed to process answer during ICE Restart. Error: " + message);
                 });
             }
         };
@@ -8492,7 +8868,7 @@ PeerConnection.prototype.iceRestart = function () {
         _this.pstream.reinvite(_this.version.getSDP(), _this.callSid);
     }).catch(function (err) {
         var message = err && err.message ? err.message : err;
-        _this._log.info("Failed to createOffer during ICE Restart. Error: " + message);
+        _this._log.error("Failed to createOffer during ICE Restart. Error: " + message);
         // CreateOffer failures doesn't transition ice state to failed
         // We need trigger it so it can be picked up by retries
         _this.onfailed(message);
@@ -8586,7 +8962,7 @@ PeerConnection.prototype.close = function () {
     }
     if (this.stream) {
         this.mute(false);
-        this._stopStream(this.stream);
+        this._stopStream();
     }
     this.stream = null;
     this._removeReconnectionListeners();
@@ -8654,7 +9030,7 @@ PeerConnection.prototype.getOrCreateDTMFSender = function getOrCreateDTMFSender(
     var self = this;
     var pc = this.version.pc;
     if (!pc) {
-        this._log.info('No RTCPeerConnection available to call createDTMFSender on');
+        this._log.warn('No RTCPeerConnection available to call createDTMFSender on');
         return null;
     }
     if (typeof pc.getSenders === 'function' && (typeof RTCDTMFSender === 'function' || typeof RTCDtmfSender === 'function')) {
@@ -8671,7 +9047,7 @@ PeerConnection.prototype.getOrCreateDTMFSender = function getOrCreateDTMFSender(
             return tracks && tracks[0];
         })[0];
         if (!track) {
-            this._log.info('No local audio MediaStreamTrack available on the RTCPeerConnection to pass to createDTMFSender');
+            this._log.warn('No local audio MediaStreamTrack available on the RTCPeerConnection to pass to createDTMFSender');
             return null;
         }
         this._log.info('Creating RTCDTMFSender');
@@ -8757,7 +9133,7 @@ function setAudioSource(audio, stream) {
 PeerConnection.enabled = rtcpc_1.default.test();
 exports.default = PeerConnection;
 
-},{"../errors":14,"../log":17,"../util":35,"./rtcpc":29,"./sdp":30}],29:[function(require,module,exports){
+},{"../errors":15,"../log":18,"../util":36,"./rtcpc":30,"./sdp":31}],30:[function(require,module,exports){
 (function (global){(function (){
 "use strict";
 /**
@@ -8800,7 +9176,7 @@ function RTCPC(options) {
     }
 }
 RTCPC.prototype.create = function (rtcConstraints, rtcConfiguration) {
-    this.log = log_1.default.getInstance();
+    this.log = new log_1.default('RTCPC');
     this.pc = new this.RTCPeerConnection(rtcConfiguration, rtcConstraints);
 };
 RTCPC.prototype.createModernConstraints = function (c) {
@@ -8963,7 +9339,7 @@ function promisifySet(fn, ctx) {
 exports.default = RTCPC;
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"../log":17,"../util":35,"./sdp":30,"rtcpeerconnection-shim":44}],30:[function(require,module,exports){
+},{"../log":18,"../util":36,"./sdp":31,"rtcpeerconnection-shim":45}],31:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.setMaxAverageBitrate = exports.setIceAggressiveNomination = exports.setCodecPreferences = exports.getPreferredCodecInfo = void 0;
@@ -9134,7 +9510,7 @@ function getPayloadTypesInMediaSection(section) {
     return matches.slice(1).map(function (match) { return parseInt(match, 10); });
 }
 
-},{"../util":35}],31:[function(require,module,exports){
+},{"../util":36}],32:[function(require,module,exports){
 "use strict";
 var __spreadArrays = (this && this.__spreadArrays) || function () {
     for (var s = 0, i = 0, il = arguments.length; i < il; i++) s += arguments[i].length;
@@ -9352,7 +9728,7 @@ function createRTCSample(statsReport) {
     return sample;
 }
 
-},{"../errors":14,"./mockrtcstatsreport":26}],32:[function(require,module,exports){
+},{"../errors":15,"./mockrtcstatsreport":27}],33:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -9374,7 +9750,7 @@ var MediaDeviceInfoShim = /** @class */ (function () {
 }());
 exports.default = MediaDeviceInfoShim;
 
-},{}],33:[function(require,module,exports){
+},{}],34:[function(require,module,exports){
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 /**
@@ -9586,7 +9962,7 @@ Sound.prototype.play = function play() {
 };
 exports.default = Sound;
 
-},{"./asyncQueue":2,"./audioplayer/audioplayer":4,"./errors":14}],34:[function(require,module,exports){
+},{"./asyncQueue":2,"./audioplayer/audioplayer":4,"./errors":15}],35:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -10072,7 +10448,7 @@ var StatsMonitor = /** @class */ (function (_super) {
 }(events_1.EventEmitter));
 exports.default = StatsMonitor;
 
-},{"./errors":14,"./rtc/mos":27,"./rtc/stats":31,"./util":35,"events":38}],35:[function(require,module,exports){
+},{"./errors":15,"./rtc/mos":28,"./rtc/stats":32,"./util":36,"events":39}],36:[function(require,module,exports){
 (function (global){(function (){
 "use strict";
 /**
@@ -10219,7 +10595,7 @@ var Exception = TwilioException;
 exports.Exception = Exception;
 
 }).call(this)}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{}],36:[function(require,module,exports){
+},{}],37:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -10260,7 +10636,7 @@ function generateVoiceEventSid() {
 }
 exports.generateVoiceEventSid = generateVoiceEventSid;
 
-},{"../twilio/errors":14,"md5":43}],37:[function(require,module,exports){
+},{"../twilio/errors":15,"md5":44}],38:[function(require,module,exports){
 "use strict";
 /**
  * @packageDocumentation
@@ -10355,7 +10731,7 @@ var WSTransport = /** @class */ (function (_super) {
         /**
          * An instance of Logger to use.
          */
-        _this._log = log_1.default.getInstance();
+        _this._log = new log_1.default('WSTransport');
         /**
          * Whether we should attempt to fallback if we receive an applicable error
          * when trying to connect to a signaling endpoint.
@@ -10379,7 +10755,7 @@ var WSTransport = /** @class */ (function (_super) {
          * Called in response to WebSocket#close event.
          */
         _this._onSocketClose = function (event) {
-            _this._log.info("Received websocket close event code: " + event.code + ". Reason: " + event.reason);
+            _this._log.error("Received websocket close event code: " + event.code + ". Reason: " + event.reason);
             // 1006: Abnormal close. When the server is unreacheable
             // 1015: TLS Handshake error
             if (event.code === 1006 || event.code === 1015) {
@@ -10414,7 +10790,7 @@ var WSTransport = /** @class */ (function (_super) {
          * Called in response to WebSocket#error event.
          */
         _this._onSocketError = function (err) {
-            _this._log.info("WebSocket received error: " + err.message);
+            _this._log.error("WebSocket received error: " + err.message);
             _this.emit('error', {
                 code: 31000,
                 message: err.message || 'WSTransport socket error',
@@ -10493,7 +10869,7 @@ var WSTransport = /** @class */ (function (_super) {
         }
         catch (e) {
             // Some unknown error occurred. Reset the socket to get a fresh session.
-            this._log.info('Error while sending message:', e.message);
+            this._log.error('Error while sending message:', e.message);
             this._closeSocket();
             return false;
         }
@@ -10573,7 +10949,7 @@ var WSTransport = /** @class */ (function (_super) {
             this._socket = new this._options.WebSocket(this._connectedUri);
         }
         catch (e) {
-            this._log.info('Could not connect to endpoint:', e.message);
+            this._log.error('Could not connect to endpoint:', e.message);
             this._close();
             this.emit('error', {
                 code: 31000,
@@ -10748,7 +11124,7 @@ var WSTransport = /** @class */ (function (_super) {
 }(events_1.EventEmitter));
 exports.default = WSTransport;
 
-},{"./backoff":7,"./errors":14,"./log":17,"events":38}],38:[function(require,module,exports){
+},{"./backoff":8,"./errors":15,"./log":18,"events":39}],39:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -11273,7 +11649,7 @@ function functionBindPolyfill(context) {
   };
 }
 
-},{}],39:[function(require,module,exports){
+},{}],40:[function(require,module,exports){
 var charenc = {
   // UTF-8 encoding
   utf8: {
@@ -11308,7 +11684,7 @@ var charenc = {
 
 module.exports = charenc;
 
-},{}],40:[function(require,module,exports){
+},{}],41:[function(require,module,exports){
 (function() {
   var base64map
       = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/',
@@ -11406,7 +11782,7 @@ module.exports = charenc;
   module.exports = crypt;
 })();
 
-},{}],41:[function(require,module,exports){
+},{}],42:[function(require,module,exports){
 /*!
  * Determine if an object is a Buffer
  *
@@ -11429,7 +11805,7 @@ function isSlowBuffer (obj) {
   return typeof obj.readFloatLE === 'function' && typeof obj.slice === 'function' && isBuffer(obj.slice(0, 0))
 }
 
-},{}],42:[function(require,module,exports){
+},{}],43:[function(require,module,exports){
 /*
 * loglevel - https://github.com/pimterry/loglevel
 *
@@ -11699,7 +12075,7 @@ function isSlowBuffer (obj) {
     return defaultLogger;
 }));
 
-},{}],43:[function(require,module,exports){
+},{}],44:[function(require,module,exports){
 (function(){
   var crypt = require('crypt'),
       utf8 = require('charenc').utf8,
@@ -11861,7 +12237,7 @@ function isSlowBuffer (obj) {
 
 })();
 
-},{"charenc":39,"crypt":40,"is-buffer":41}],44:[function(require,module,exports){
+},{"charenc":40,"crypt":41,"is-buffer":42}],45:[function(require,module,exports){
 /*
  *  Copyright (c) 2017 The WebRTC project authors. All Rights Reserved.
  *
@@ -13557,7 +13933,7 @@ module.exports = function(window, edgeVersion) {
   return RTCPeerConnection;
 };
 
-},{"sdp":45}],45:[function(require,module,exports){
+},{"sdp":46}],46:[function(require,module,exports){
 /* eslint-env node */
 'use strict';
 
