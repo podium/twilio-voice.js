@@ -7,7 +7,7 @@
  * @internalapi
  */
 declare const PACKAGE_NAME = "@twilio/voice-sdk";
-declare const RELEASE_VERSION = "2.8.1-dev";
+declare const RELEASE_VERSION = "2.10.0";
 declare const SOUNDS_BASE_URL = "https://sdk.twilio.com/js/client/sounds/releases/1.0.0";
 declare const COWBELL_AUDIO_URL: string;
 declare const ECHO_TEST_DURATION = 20000;

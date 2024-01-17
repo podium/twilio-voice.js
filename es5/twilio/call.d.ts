@@ -512,10 +512,6 @@ declare namespace Call {
          */
         audioHelper: IAudioHelper;
         /**
-         * A method to use for getUserMedia.
-         */
-        getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
-        /**
          * Whether or not the browser uses unified-plan SDP by default.
          */
         isUnifiedPlanDefault: boolean;

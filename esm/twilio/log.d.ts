@@ -15,8 +15,9 @@ export interface LogOptions {
     LogLevelModule: any;
 }
 /**
- * {@link Log} provides logging features throught the sdk using loglevel module
+ * {@link Log} provides logging features throughout the sdk using loglevel module
  * See https://github.com/pimterry/loglevel for documentation
+ * @private
  */
 declare class Log {
     /**
@@ -24,23 +25,29 @@ declare class Log {
      */
     static levels: LogLevelModule.LogLevel;
     /**
-     * Create the logger singleton instance if it doesn't exists
-     * @returns The singleton {@link Log} instance
+     * Return the `loglevel` instance maintained internally.
+     * @param [options] - Optional settings
+     * @returns The `loglevel` instance.
      */
-    static getInstance(): Log;
+    static getLogLevelInstance(options?: LogOptions): LogLevelModule.Logger;
     /**
-     * The logger singleton instance
+     * The loglevel singleton instance
      */
-    private static instance;
+    private static loglevelInstance;
     /**
      * The loglevel logger instance that will be used in this {@link Log}
      */
     private _log;
     /**
+     * Prefix to use for this log instance
+     */
+    private _prefix;
+    /**
      * @constructor
+     * @param [tag] - tag name for the logs
      * @param [options] - Optional settings
      */
-    constructor(options?: LogOptions);
+    constructor(tag: string, options?: LogOptions);
     /**
      * Log a debug message
      * @param args - Any number of arguments to be passed to loglevel.debug
@@ -51,11 +58,6 @@ declare class Log {
      * @param args - Any number of arguments to be passed to loglevel.error
      */
     error(...args: any[]): void;
-    /**
-     * Return the `loglevel` instance maintained internally.
-     * @returns The `loglevel` instance.
-     */
-    getLogLevelInstance(): LogLevelModule.Logger;
     /**
      * Log an info message
      * @param args - Any number of arguments to be passed to loglevel.info

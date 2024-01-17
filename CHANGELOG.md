@@ -1,5 +1,39 @@
 :warning: **Important**: If you are upgrading to version 2.3.0 or later and have firewall rules or network configuration that blocks any unknown traffic by default, you need to update your configuration to allow connections to the new DNS names and IP addresses. Please refer to this [changelog](#230-january-23-2023) for more details.
 
+2.10.0 (January 5, 2024)
+========================
+
+Improvements
+------------
+
+- Added tags to client logs for easier filtering
+- Added log statements to API calls and events for debugging purposes
+
+Bug Fixes
+---------
+
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/issues/33) where updating token after signaling connection has gone offline causes an Invalid State error.
+- Fixed an issue where `Device.Options.logLevel` is only accepting a `number` type. With this release, `strings` are now also allowed. See [Device.Options.logLevel](https://twilio.github.io/twilio-voice.js/interfaces/voice.device.options.html#loglevel) for a list of possible values.
+- Fixed an [issue](https://github.com/twilio/twilio-voice.js/pull/218#issuecomment-1832496953) where `call.mute()` does not have an effect while the `call.status()` is either `ringing` or `connecting`. Thank you @zyzmoz for your [contribution](https://github.com/twilio/twilio-voice.js/pull/218).
+
+2.9.0 (November 28, 2023)
+=========================
+
+New Features
+------------
+
+### Audio Processor APIs
+
+The SDK now includes Audio Processor APIs, enabling access to raw audio input and the ability to modify audio data before sending it to Twilio. With this new feature, the following use cases can now be easily achieved on the client side:
+
+- Background noise removal using a noise cancellation library of your choice
+- Music playback when putting the call on hold
+- Audio filters
+- AI audio classification
+- ... and more!
+
+Please visit this [page](https://twilio.github.io/twilio-voice.js/interfaces/voice.audioprocessor.html) for more details about the Audio Processor APIs.
+
 2.8.0 (October 16, 2023)
 =======================
 
@@ -81,6 +115,10 @@ Bug Fixes
 
 2.7.2 (September 21, 2023)
 =========================
+
+_Updated November 1, 2023_
+
+_We have identified an issue on Chromium-based browsers running on MacOS 14 (Sonoma) where the audio deteriorates during a call. This issue happens due to the excessive calls to MediaDevices: enumerateDevices() API. With this release, the SDK calls this API only when necessary to avoid audio deterioration._
 
 Changes
 -------
@@ -282,11 +320,7 @@ Bug Fixes
 - Use DOMException instead of DOMError, which has been deprecated
 - Removed npm util from the package, instead favoring native functions
 
-<<<<<<< HEAD
-2.1.0 (December 16, 2021)
-=======
 2.1.0 (January 6, 2022)
->>>>>>> 55a956dc49644ec896d53a522e926513daf985c7
 =========================
 
 New Features
